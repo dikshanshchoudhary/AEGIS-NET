@@ -4,7 +4,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import torch
@@ -221,28 +221,74 @@ class DetectionEngine:
         return weights
 
     def predict(self, record: Mapping[str, object]) -> DetectionResult:
-        features = self.preprocessor.transform_record(record)
-        feature_batch = features.reshape(1, -1)
-        xgb_scores_array = np.asarray(
-            self.classifier.predict(xgb.DMatrix(feature_batch))[0],
+        return self.predict_many([record])[0]
+
+    def predict_many(
+        self,
+        records: Sequence[Mapping[str, object]],
+        *,
+        batch_size: int = 256,
+    ) -> list[DetectionResult]:
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive.")
+        if not records:
+            return []
+
+        feature_batch = np.stack(
+            [self.preprocessor.transform_record(record) for record in records]
+        ).astype(np.float32, copy=False)
+        xgb_scores = np.asarray(
+            self.classifier.predict(xgb.DMatrix(feature_batch)),
             dtype=np.float64,
         )
-        with torch.no_grad():
-            tensor = torch.from_numpy(feature_batch).to(self.device)
-            neural_scores_arrays = {
-                name: torch.softmax(model(tensor), dim=1)[0].cpu().numpy()
-                for name, model in self.neural_models.items()
-            }
-            reconstruction = self.autoencoder(tensor)
-            anomaly_score = float(torch.mean((reconstruction - tensor) ** 2).item())
-
-        if len(xgb_scores_array) != len(self.labels) or any(
-            len(scores) != len(self.labels)
-            for scores in neural_scores_arrays.values()
-        ):
+        if xgb_scores.shape != (len(records), len(self.labels)):
             raise ValueError("Model output dimensions do not match the exported label order.")
-        combined = self.classifier_weights["xgboost"] * xgb_scores_array
-        for model_name, scores in neural_scores_arrays.items():
+
+        neural_score_parts: dict[str, list[np.ndarray]] = {
+            name: [] for name in self.neural_models
+        }
+        anomaly_score_parts: list[np.ndarray] = []
+        with torch.no_grad():
+            for start in range(0, len(records), batch_size):
+                feature_chunk = feature_batch[start:start + batch_size]
+                tensor = torch.from_numpy(feature_chunk).to(self.device)
+                for name, model in self.neural_models.items():
+                    probabilities = torch.softmax(model(tensor), dim=1)
+                    neural_score_parts[name].append(probabilities.cpu().numpy())
+                reconstruction = self.autoencoder(tensor)
+                anomaly_score_parts.append(
+                    torch.mean((reconstruction - tensor) ** 2, dim=1)
+                    .cpu()
+                    .numpy()
+                )
+        neural_scores = {
+            name: np.concatenate(parts, axis=0)
+            for name, parts in neural_score_parts.items()
+        }
+        anomaly_scores = np.concatenate(anomaly_score_parts)
+        if any(scores.shape != xgb_scores.shape for scores in neural_scores.values()):
+            raise ValueError("Model output dimensions do not match the exported label order.")
+
+        return [
+            self._build_result(
+                xgb_scores[index],
+                {
+                    name: scores[index]
+                    for name, scores in neural_scores.items()
+                },
+                float(anomaly_scores[index]),
+            )
+            for index in range(len(records))
+        ]
+
+    def _build_result(
+        self,
+        xgb_scores: np.ndarray,
+        neural_scores: Mapping[str, np.ndarray],
+        anomaly_score: float,
+    ) -> DetectionResult:
+        combined = self.classifier_weights["xgboost"] * xgb_scores
+        for model_name, scores in neural_scores.items():
             combined += self.classifier_weights[model_name] * scores
         predicted_index = int(np.argmax(combined))
         predicted_category = self.labels[predicted_index]
@@ -283,14 +329,14 @@ class DetectionEngine:
             confidence_note="Model score, not a guarantee or calibrated probability of correctness.",
             xgboost_scores={
                 label: float(score)
-                for label, score in zip(self.labels, xgb_scores_array)
+                for label, score in zip(self.labels, xgb_scores)
             },
             neural_scores={
                 model_name: {
                     label: float(score)
                     for label, score in zip(self.labels, scores)
                 }
-                for model_name, scores in neural_scores_arrays.items()
+                for model_name, scores in neural_scores.items()
             },
             anomaly_score=anomaly_score,
             anomaly_threshold=self.anomaly_threshold,

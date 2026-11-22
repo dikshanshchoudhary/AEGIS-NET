@@ -14,6 +14,10 @@ paths:
 logging:
   level: INFO
 
+api:
+  max_upload_bytes: 20971520
+  max_csv_rows: 10000
+
 detection:
   classifier_weights:
     xgboost: 0.5
