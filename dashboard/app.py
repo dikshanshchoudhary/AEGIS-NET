@@ -10,7 +10,7 @@ import streamlit as st
 
 
 st.set_page_config(
-    page_title="AEGIS-NET Threat Monitor",
+    page_title="IMB Threat Monitor",
     page_icon="🛡️",
     layout="wide",
 )
@@ -19,27 +19,27 @@ st.markdown(
     """
     <style>
     :root {
-        --aegis-bg: #071018;
-        --aegis-panel: rgba(15, 29, 40, 0.88);
-        --aegis-border: rgba(133, 170, 190, 0.16);
-        --aegis-text: #e8f1f5;
-        --aegis-muted: #91a6b1;
-        --aegis-mint: #48e1b0;
-        --aegis-blue: #70b7ff;
+        --imb-bg: #071018;
+        --imb-panel: rgba(15, 29, 40, 0.88);
+        --imb-border: rgba(133, 170, 190, 0.16);
+        --imb-text: #e8f1f5;
+        --imb-muted: #91a6b1;
+        --imb-mint: #48e1b0;
+        --imb-blue: #70b7ff;
     }
 
     .stApp {
         background:
             radial-gradient(ellipse at 78% -10%, rgba(35, 122, 114, 0.18), transparent 38%),
             radial-gradient(ellipse at 5% 25%, rgba(49, 104, 151, 0.13), transparent 34%),
-            var(--aegis-bg);
-        color: var(--aegis-text);
+            var(--imb-bg);
+        color: var(--imb-text);
     }
 
     [data-testid="stHeader"] { background: transparent; }
     [data-testid="stSidebar"] {
         background: rgba(7, 16, 24, 0.96);
-        border-right: 1px solid var(--aegis-border);
+        border-right: 1px solid var(--imb-border);
     }
     .block-container {
         max-width: 1480px;
@@ -47,7 +47,7 @@ st.markdown(
         padding-bottom: 4rem;
     }
 
-    .aegis-hero {
+    .imb-hero {
         position: relative;
         overflow: hidden;
         padding: 30px 34px;
@@ -58,7 +58,7 @@ st.markdown(
             linear-gradient(112deg, rgba(16, 42, 48, 0.96), rgba(11, 25, 38, 0.94) 56%, rgba(16, 35, 50, 0.96));
         box-shadow: 0 22px 60px rgba(0, 0, 0, 0.22);
     }
-    .aegis-hero::after {
+    .imb-hero::after {
         content: "";
         position: absolute;
         top: -110px;
@@ -70,70 +70,70 @@ st.markdown(
         box-shadow: 0 0 0 28px rgba(72, 225, 176, 0.025), 0 0 0 58px rgba(112, 183, 255, 0.025);
         pointer-events: none;
     }
-    .aegis-eyebrow {
+    .imb-eyebrow {
         display: flex;
         align-items: center;
         gap: 9px;
-        color: var(--aegis-mint);
+        color: var(--imb-mint);
         font: 700 0.72rem/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
         letter-spacing: 0.14em;
         text-transform: uppercase;
     }
-    .aegis-live-dot {
+    .imb-live-dot {
         width: 8px;
         height: 8px;
         border-radius: 50%;
-        background: var(--aegis-mint);
+        background: var(--imb-mint);
         box-shadow: 0 0 14px rgba(72, 225, 176, 0.8);
     }
-    .aegis-hero h1 {
+    .imb-hero h1 {
         margin: 12px 0 6px;
         color: #f0f7fa;
         font-size: clamp(2.2rem, 5vw, 3.5rem);
         font-weight: 800;
         letter-spacing: -0.055em;
     }
-    .aegis-hero h1 span { color: var(--aegis-mint); }
-    .aegis-hero p {
+    .imb-hero h1 span { color: var(--imb-mint); }
+    .imb-hero p {
         max-width: 740px;
         margin: 0;
         color: #b1c2cb;
         font-size: 1rem;
     }
-    .aegis-badges {
+    .imb-badges {
         display: flex;
         flex-wrap: wrap;
         gap: 9px;
         margin-top: 22px;
     }
-    .aegis-badge {
+    .imb-badge {
         padding: 7px 11px;
-        border: 1px solid var(--aegis-border);
+        border: 1px solid var(--imb-border);
         border-radius: 999px;
         background: rgba(5, 14, 21, 0.48);
         color: #d3e2e8;
         font: 600 0.73rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
         letter-spacing: 0.035em;
     }
-    .aegis-badge.good { border-color: rgba(72, 225, 176, 0.28); color: var(--aegis-mint); }
-    .aegis-badge.neutral { border-color: rgba(112, 183, 255, 0.25); color: var(--aegis-blue); }
+    .imb-badge.good { border-color: rgba(72, 225, 176, 0.28); color: var(--imb-mint); }
+    .imb-badge.neutral { border-color: rgba(112, 183, 255, 0.25); color: var(--imb-blue); }
 
     [data-testid="stMetric"] {
         min-height: 122px;
         padding: 17px 18px;
-        border: 1px solid var(--aegis-border);
+        border: 1px solid var(--imb-border);
         border-radius: 15px;
         background: linear-gradient(145deg, rgba(18, 35, 47, 0.93), rgba(11, 23, 33, 0.9));
         box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
     }
     [data-testid="stMetricLabel"] p {
-        color: var(--aegis-muted);
+        color: var(--imb-muted);
         font-size: 0.79rem;
         font-weight: 650;
         letter-spacing: 0.035em;
     }
     [data-testid="stMetricValue"] {
-        color: var(--aegis-text);
+        color: var(--imb-text);
         font-weight: 760;
     }
     [data-testid="stMetricDelta"] { font-size: 0.76rem; }
@@ -141,66 +141,66 @@ st.markdown(
         font-weight: 650;
     }
     [data-testid="stTabs"] button[aria-selected="true"] {
-        color: var(--aegis-mint);
+        color: var(--imb-mint);
     }
     [data-testid="stDataFrame"], [data-testid="stAlert"] {
         border-radius: 13px;
     }
 
-    .aegis-model-card {
+    .imb-model-card {
         height: 100%;
         padding: 18px;
-        border: 1px solid var(--aegis-border);
+        border: 1px solid var(--imb-border);
         border-radius: 16px;
         background: linear-gradient(150deg, rgba(18, 36, 48, 0.96), rgba(10, 21, 31, 0.96));
     }
-    .aegis-model-card.best {
+    .imb-model-card.best {
         border-color: rgba(72, 225, 176, 0.5);
         box-shadow: inset 0 0 26px rgba(72, 225, 176, 0.045), 0 10px 30px rgba(0, 0, 0, 0.14);
     }
-    .aegis-model-top {
+    .imb-model-top {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        color: var(--aegis-muted);
+        color: var(--imb-muted);
         font: 700 0.67rem/1 ui-monospace, SFMono-Regular, Consolas, monospace;
         letter-spacing: 0.1em;
         text-transform: uppercase;
     }
-    .aegis-rank {
-        color: var(--aegis-mint);
+    .imb-rank {
+        color: var(--imb-mint);
         font-size: 0.7rem;
     }
-    .aegis-model-card h3 {
+    .imb-model-card h3 {
         margin: 13px 0 19px;
-        color: var(--aegis-text);
+        color: var(--imb-text);
         font-size: 1.35rem;
         letter-spacing: -0.025em;
     }
-    .aegis-score-row {
+    .imb-score-row {
         display: flex;
         justify-content: space-between;
         margin: 11px 0 6px;
         color: #a9bac3;
         font-size: 0.8rem;
     }
-    .aegis-score-row strong { color: #edf5f7; font-size: 0.9rem; }
-    .aegis-score-track {
+    .imb-score-row strong { color: #edf5f7; font-size: 0.9rem; }
+    .imb-score-track {
         height: 6px;
         overflow: hidden;
         border-radius: 999px;
         background: rgba(143, 166, 179, 0.14);
     }
-    .aegis-score-track span {
+    .imb-score-track span {
         display: block;
         height: 100%;
         border-radius: inherit;
         background: linear-gradient(90deg, #32c99b, #70d9c0);
     }
-    .aegis-score-track.f1 span { background: linear-gradient(90deg, #4a9cf2, #8ecaff); }
-    .aegis-model-note {
+    .imb-score-track.f1 span { background: linear-gradient(90deg, #4a9cf2, #8ecaff); }
+    .imb-model-note {
         margin-top: 14px;
-        color: var(--aegis-muted);
+        color: var(--imb-muted);
         font-size: 0.72rem;
     }
     </style>
@@ -225,7 +225,7 @@ def _show_request_error(error: httpx.HTTPError) -> None:
     if isinstance(error, httpx.HTTPStatusError):
         st.error(f"API error {error.response.status_code}: {error.response.text}")
     else:
-        st.error(f"Could not reach the AEGIS-NET API: {error}")
+        st.error(f"Could not reach the IMB API: {error}")
 
 
 def _as_numeric_features(row: pd.Series) -> dict[str, float | None]:
@@ -249,20 +249,20 @@ def _render_model_card(
 ) -> None:
     accuracy = max(0.0, min(1.0, float(metrics["accuracy"])))
     macro_f1 = max(0.0, min(1.0, float(metrics["macro_f1"])))
-    card_class = "aegis-model-card best" if best else "aegis-model-card"
+    card_class = "imb-model-card best" if best else "imb-model-card"
     badge = "TOP MACRO-F1" if best else f"RANK {rank}"
     st.markdown(
         f"""
         <div class="{card_class}">
-          <div class="aegis-model-top">
-            <span>Deep learning</span><span class="aegis-rank">{badge}</span>
+          <div class="imb-model-top">
+            <span>Deep learning</span><span class="imb-rank">{badge}</span>
           </div>
           <h3>{html.escape(name.upper())}</h3>
-          <div class="aegis-score-row"><span>Accuracy</span><strong>{accuracy:.2%}</strong></div>
-          <div class="aegis-score-track"><span style="width:{accuracy:.2%}"></span></div>
-          <div class="aegis-score-row"><span>Macro-F1</span><strong>{macro_f1:.2%}</strong></div>
-          <div class="aegis-score-track f1"><span style="width:{macro_f1:.2%}"></span></div>
-          <div class="aegis-model-note">Standalone holdout evaluation</div>
+          <div class="imb-score-row"><span>Accuracy</span><strong>{accuracy:.2%}</strong></div>
+          <div class="imb-score-track"><span style="width:{accuracy:.2%}"></span></div>
+          <div class="imb-score-row"><span>Macro-F1</span><strong>{macro_f1:.2%}</strong></div>
+          <div class="imb-score-track f1"><span style="width:{macro_f1:.2%}"></span></div>
+          <div class="imb-model-note">Standalone holdout evaluation</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -320,18 +320,18 @@ device_badge = (
 model_version = html.escape(str(health["model_version"]))
 st.markdown(
     f"""
-    <section class="aegis-hero">
-      <div class="aegis-eyebrow"><span class="aegis-live-dot"></span>
+    <section class="imb-hero">
+      <div class="imb-eyebrow"><span class="imb-live-dot"></span>
         Defensive network intelligence · offline analysis
       </div>
       <h1>AEGIS<span>-NET</span></h1>
       <p>One flow at a time. Multiple model perspectives. Clear, explainable risk signals.</p>
-      <div class="aegis-badges">
-        <span class="aegis-badge good">DETECTION ENGINE ONLINE</span>
-        <span class="aegis-badge neutral">{html.escape(device_badge)}</span>
-        <span class="aegis-badge">{int(health['feature_count'])} FEATURES</span>
-        <span class="aegis-badge">MODEL {model_version[:10]}</span>
-        <span class="aegis-badge">NO TRAFFIC BLOCKING</span>
+      <div class="imb-badges">
+        <span class="imb-badge good">DETECTION ENGINE ONLINE</span>
+        <span class="imb-badge neutral">{html.escape(device_badge)}</span>
+        <span class="imb-badge">{int(health['feature_count'])} FEATURES</span>
+        <span class="imb-badge">MODEL {model_version[:10]}</span>
+        <span class="imb-badge">NO TRAFFIC BLOCKING</span>
       </div>
     </section>
     """,

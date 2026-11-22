@@ -1,6 +1,6 @@
-# AEGIS-NET
+# IMB
 
-AI-powered threat detection for offline network-flow records and authorized lab
+IMB is an AI-powered threat detection system for offline network-flow records and authorized lab
 traffic. The application is detection-only and does not automatically block
 network traffic.
 
@@ -17,7 +17,7 @@ network traffic.
 From the folder containing the project, run in PowerShell:
 
 ```powershell
-cd .\AEGIS-NET
+cd .\IMB
 py -3.15 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -51,7 +51,7 @@ The training pipeline downloads the public CIC-IDS-2017 flow dataset through
 KaggleHub unless `--dataset-dir` points to an existing extracted dataset:
 
 ```powershell
-python -m src.models.train_models --device cpu --xgboost-device cuda --overwrite-artifacts
+python -m imb.models.train_models --device cpu --xgboost-device cuda --overwrite-artifacts
 ```
 
 The pipeline uses one shared fitted preprocessing contract, then exports the
@@ -131,7 +131,7 @@ secured a network-facing deployment.
 
 - `data\`: raw, processed, and sample flow records
 - `notebooks\`: local experiments
-- `src\`: preprocessing, models, detection, evaluation, and utilities
+- `imb\`: preprocessing, models, detection, evaluation, and utilities
 - `artifacts\`: exported models and preprocessing contract
 - `api\`: FastAPI application
 - `dashboard\`: Streamlit interface

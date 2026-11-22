@@ -1,6 +1,6 @@
 import torch
 
-from src.models.torch_models import (
+from imb.models.torch_models import (
     build_ann,
     build_autoencoder,
     build_classifier,

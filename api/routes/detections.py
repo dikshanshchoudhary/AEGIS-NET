@@ -10,7 +10,7 @@ import pandas as pd
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
 from database.repository import DetectionRepository
-from src.detection.engine import DetectionEngine, DetectionResult
+from imb.detection.engine import DetectionEngine, DetectionResult
 from api.schemas.detection import (
     AlertResponse,
     AlertsResponse,

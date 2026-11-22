@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from src.detection.engine import DetectionEngine
+from imb.detection.engine import DetectionEngine
 
 
 class _Preprocessor:

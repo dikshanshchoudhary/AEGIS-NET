@@ -1,1 +1,1 @@
-"""FastAPI application for AEGIS-NET."""
+"""FastAPI application for IMB."""

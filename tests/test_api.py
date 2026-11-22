@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import create_app
-from src.detection.engine import DetectionResult
+from imb.detection.engine import DetectionResult
 
 
 class _FakePreprocessor:

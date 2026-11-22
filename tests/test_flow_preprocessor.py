@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.preprocessing.flow_preprocessor import FlowPreprocessor
+from imb.preprocessing.flow_preprocessor import FlowPreprocessor
 
 
 def test_fit_persists_feature_order_and_handles_missing_values(tmp_path):

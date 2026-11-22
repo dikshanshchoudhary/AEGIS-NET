@@ -1,1 +1,1 @@
-"""SQLite persistence for AEGIS-NET detections."""
+"""SQLite persistence for IMB detections."""

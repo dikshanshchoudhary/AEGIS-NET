@@ -9,9 +9,9 @@ from fastapi import FastAPI
 
 from api.routes.detections import router
 from database.repository import DetectionRepository
-from src.detection.engine import DetectionEngine
-from src.utils.config import PROJECT_ROOT, load_config
-from src.utils.logging_config import configure_logging
+from imb.detection.engine import DetectionEngine
+from imb.utils.config import PROJECT_ROOT, load_config
+from imb.utils.logging_config import configure_logging
 
 
 def _configured_path(value: object, setting_name: str) -> Path:
@@ -76,7 +76,7 @@ def create_app(
         yield
 
     application = FastAPI(
-        title=str(app_config.get("name", "AEGIS-NET")),
+        title=str(app_config.get("name", "IMB")),
         version=str(app_config.get("version", "0.1.0")),
         description=(
             "Offline network-flow classification and anomaly analysis. "

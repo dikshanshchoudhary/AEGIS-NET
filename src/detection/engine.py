@@ -10,9 +10,9 @@ import numpy as np
 import torch
 import xgboost as xgb
 
-from src.models.torch_models import build_autoencoder, build_classifier
-from src.preprocessing.flow_preprocessor import FlowPreprocessor
-from src.utils.config import PROJECT_ROOT, load_config
+from imb.models.torch_models import build_autoencoder, build_classifier
+from imb.preprocessing.flow_preprocessor import FlowPreprocessor
+from imb.utils.config import PROJECT_ROOT, load_config
 
 
 NEURAL_MODEL_NAMES = ("ann", "cnn", "rnn", "lstm", "transformer")

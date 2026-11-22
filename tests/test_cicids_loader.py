@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.preprocessing.cicids import sample_cicids_csvs
+from imb.preprocessing.cicids import sample_cicids_csvs
 
 
 def test_sample_cicids_csvs_excludes_identifiers_and_caps_each_class(tmp_path):

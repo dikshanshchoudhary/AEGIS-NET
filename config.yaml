@@ -1,5 +1,5 @@
 app:
-  name: AEGIS-NET
+  name: IMB
   version: 0.1.0
 
 paths:
@@ -9,7 +9,7 @@ paths:
   classifiers: artifacts/classifiers
   autoencoders: artifacts/autoencoders
   preprocessing: artifacts/preprocessing
-  database: database/aegis_net.db
+  database: database/imb.db
 
 logging:
   level: INFO

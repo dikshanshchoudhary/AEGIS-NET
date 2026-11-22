@@ -17,16 +17,16 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 import xgboost as xgb
 
-from src.models.torch_models import build_autoencoder, build_classifier
-from src.preprocessing.cicids import (
+from imb.models.torch_models import build_autoencoder, build_classifier
+from imb.preprocessing.cicids import (
     DATASET_ID,
     FlowDatasetSample,
     download_cicids_dataset,
     sample_cicids_csvs,
 )
-from src.preprocessing.flow_preprocessor import FlowPreprocessor
-from src.utils.config import PROJECT_ROOT
-from src.utils.logging_config import configure_logging
+from imb.preprocessing.flow_preprocessor import FlowPreprocessor
+from imb.utils.config import PROJECT_ROOT
+from imb.utils.logging_config import configure_logging
 
 
 LOGGER = logging.getLogger(__name__)
@@ -514,7 +514,7 @@ def train_and_export(
 
     manifest = {
         "schema_version": 2,
-        "project": "AEGIS-NET",
+        "project": "IMB",
         "dataset": DATASET_ID,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "python_version": platform.python_version(),
@@ -567,7 +567,7 @@ def train_and_export(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Train AEGIS-NET models from CIC-IDS-2017 flow CSVs."
+        description="Train IMB models from CIC-IDS-2017 flow CSVs."
     )
     parser.add_argument(
         "--dataset-dir",

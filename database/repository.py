@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.detection.engine import DetectionResult
+from imb.detection.engine import DetectionResult
 
 
 _METADATA_FIELDS = {
