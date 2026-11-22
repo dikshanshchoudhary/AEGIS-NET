@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 
 import httpx
 import pandas as pd
@@ -149,6 +150,7 @@ with analysis_tab:
     uploaded_file = st.file_uploader("Upload flow records", type=["csv"])
     if uploaded_file is not None:
         content = uploaded_file.getvalue()
+        content_digest = hashlib.sha256(content).hexdigest()
         try:
             preview = pd.read_csv(
                 io.BytesIO(content),
@@ -184,19 +186,27 @@ with analysis_tab:
                         except httpx.HTTPError as error:
                             _show_request_error(error)
                         else:
-                            result = prediction["result"]
-                            st.metric(
-                                "Predicted category",
-                                result["predicted_category"],
-                            )
-                            st.metric(
-                                "Risk",
-                                f"{result['risk_level'].title()} "
-                                f"({result['risk_score']:.3f})",
-                            )
-                            st.caption(result["confidence_note"])
-                            st.write("Reasons:", ", ".join(result["reasons"]))
-                            st.json(result)
+                            st.session_state["last_flow_prediction"] = {
+                                "content_digest": content_digest,
+                                "row_number": int(row_number),
+                                "response": prediction,
+                            }
+
+                saved_prediction = st.session_state.get("last_flow_prediction")
+                if (
+                    saved_prediction
+                    and saved_prediction["content_digest"] == content_digest
+                    and saved_prediction["row_number"] == int(row_number)
+                ):
+                    result = saved_prediction["response"]["result"]
+                    st.metric("Predicted category", result["predicted_category"])
+                    st.metric(
+                        "Risk",
+                        f"{result['risk_level'].title()} ({result['risk_score']:.3f})",
+                    )
+                    st.caption(result["confidence_note"])
+                    st.write("Reasons:", ", ".join(result["reasons"]))
+                    st.json(result)
 
                 with file_column:
                     if st.button("Analyze entire CSV", key="analyze-csv"):
@@ -217,10 +227,17 @@ with analysis_tab:
                         except httpx.HTTPError as error:
                             _show_request_error(error)
                         else:
-                            st.session_state["last_file_analysis"] = analysis
+                            st.session_state["last_file_analysis"] = {
+                                "content_digest": content_digest,
+                                "response": analysis,
+                            }
 
-                analysis = st.session_state.get("last_file_analysis")
-                if analysis:
+                saved_analysis = st.session_state.get("last_file_analysis")
+                if (
+                    saved_analysis
+                    and saved_analysis["content_digest"] == content_digest
+                ):
+                    analysis = saved_analysis["response"]
                     st.success(
                         f"Analyzed {analysis['rows_analyzed']} flows; "
                         f"recorded {analysis['alerts_created']} suspicious flows."

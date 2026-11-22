@@ -84,13 +84,48 @@ false-positive and attack-recall requirements.
 Run the automated tests:
 
 ```powershell
-python -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
 The detection engine loads the complete artifact bundle and combines the
 XGBoost and neural classifier outputs using `detection.classifier_weights` in
 `config.yaml`. It reports model scores, anomaly score, configured risk, and
 explanations; it does not take network-blocking actions.
+
+## Run the API and dashboard
+
+Start the API in one PowerShell terminal from the project directory:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+In a second terminal, start the dashboard:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run dashboard/app.py
+```
+
+Open the local Streamlit URL printed in the terminal. The dashboard's sidebar
+defaults to `http://127.0.0.1:8000`; change it if the API is listening elsewhere.
+FastAPI's interactive API documentation is available at
+`http://127.0.0.1:8000/docs`.
+
+The API provides:
+
+- `GET /health` — service, model, device, and feature readiness
+- `POST /predict` — classify one flow; supply every feature name from the
+  exported preprocessing artifact
+- `POST /analyze-file` — analyze a CSV containing every required feature
+- `GET /alerts?limit=100&offset=0` — page through suspicious detections
+- `GET /metrics` — local detection totals and saved evaluation metrics
+
+CSV uploads are limited by `api.max_upload_bytes` (20 MiB) and
+`api.max_csv_rows` (10,000) in `config.yaml`. SQLite stores the detection
+results and only a small allowlist of flow metadata (destination port, flow
+duration, packet rate, and byte rate); it does not persist full uploaded rows.
+Keep the API bound to localhost unless you have deliberately configured and
+secured a network-facing deployment.
 
 ## Project layout
 
