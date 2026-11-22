@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import io
 import hashlib
+import io
 
 import httpx
 import pandas as pd
@@ -194,9 +194,9 @@ with analysis_tab:
 
                 saved_prediction = st.session_state.get("last_flow_prediction")
                 if (
-                    saved_prediction
-                    and saved_prediction["content_digest"] == content_digest
-                    and saved_prediction["row_number"] == int(row_number)
+                    isinstance(saved_prediction, dict)
+                    and saved_prediction.get("content_digest") == content_digest
+                    and saved_prediction.get("row_number") == int(row_number)
                 ):
                     result = saved_prediction["response"]["result"]
                     st.metric("Predicted category", result["predicted_category"])
@@ -234,8 +234,8 @@ with analysis_tab:
 
                 saved_analysis = st.session_state.get("last_file_analysis")
                 if (
-                    saved_analysis
-                    and saved_analysis["content_digest"] == content_digest
+                    isinstance(saved_analysis, dict)
+                    and saved_analysis.get("content_digest") == content_digest
                 ):
                     analysis = saved_analysis["response"]
                     st.success(
