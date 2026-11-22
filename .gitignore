@@ -1,0 +1,32 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.*
+!.env.example
+.vscode/
+
+# Keep private or potentially sensitive traffic data out of Git by default.
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# Model artifacts can be large and may have separate licensing or handling rules.
+artifacts/classifiers/*
+!artifacts/classifiers/.gitkeep
+artifacts/autoencoders/*
+!artifacts/autoencoders/.gitkeep
+artifacts/preprocessing/*
+!artifacts/preprocessing/.gitkeep
+
+database/*.db
+database/*.sqlite*
+*.log

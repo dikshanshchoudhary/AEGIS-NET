@@ -1,0 +1,15 @@
+app:
+  name: AEGIS-NET
+  version: 0.1.0
+
+paths:
+  data_raw: data/raw
+  data_processed: data/processed
+  data_samples: data/samples
+  classifiers: artifacts/classifiers
+  autoencoders: artifacts/autoencoders
+  preprocessing: artifacts/preprocessing
+  database: database/aegis_net.db
+
+logging:
+  level: INFO
