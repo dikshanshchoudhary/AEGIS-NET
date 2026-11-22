@@ -1,20 +1,84 @@
 # IMB
 
-IMB is an AI-powered threat detection system for offline network-flow records and authorized lab
-traffic. The application is detection-only and does not automatically block
-network traffic.
+**A deep-learning network threat detection project for offline flow records and
+authorized lab data.**
 
-## Requirements
+IMB turns network-flow features into model predictions, anomaly signals, and
+explainable risk summaries. It combines a PyTorch model suite with an XGBoost
+reference, exposes inference through FastAPI, and presents results in a
+Streamlit dashboard.
 
-- Windows 11, 64-bit
-- Python 3.15
-- NVIDIA GPU and a compatible driver for CUDA training (the local setup uses a
-  CUDA 13 PyTorch wheel)
-- Git
+> **Safety and scope:** IMB analyzes supplied flow records. It does not capture
+> traffic automatically or block, quarantine, or modify network traffic.
 
-## Local setup
+![Python 3.15](https://img.shields.io/badge/Python-3.15-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/Deep%20Learning-PyTorch-EE4C2C?logo=pytorch&logoColor=white)
+![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Dashboard-Streamlit-FF4B4B?logo=streamlit&logoColor=white)
 
-From the folder containing the project, run in PowerShell:
+## What it does
+
+- Accepts fixed-width network-flow records and CSV files.
+- Applies the exact ordered feature and scaling contract exported with the
+  trained models.
+- Scores flows with XGBoost and five PyTorch classifiers: ANN, CNN, RNN, LSTM,
+  and Transformer.
+- Adds an autoencoder reconstruction-error signal and configurable risk score.
+- Stores detection summaries in SQLite while limiting persisted flow metadata.
+- Shows fleet-level trends, recent alerts, and per-model votes in the dashboard.
+
+## Model architecture
+
+```mermaid
+flowchart LR
+    A[Flow record or CSV] --> B[Exported 78-feature preprocessing contract]
+    B --> C[XGBoost reference]
+    B --> D[ANN · CNN · RNN · LSTM · Transformer]
+    B --> E[Benign-only autoencoder]
+    C --> F[Classifier ensemble]
+    D --> F
+    E --> G[Anomaly score]
+    F --> H[Category · model scores · risk · reasons]
+    G --> H
+    H --> I[FastAPI]
+    I --> J[SQLite history]
+    I --> K[Streamlit dashboard]
+```
+
+The preprocessing artifact defines the feature names, feature order, median
+imputation values, and scaling parameters. The application loads that artifact
+directly; it does not fit a replacement preprocessor during inference. The
+classifier ensemble weights and risk thresholds are in `config.yaml`.
+
+The CNN preserves feature-axis positions. The recurrent and attention models
+consume ordered feature indices as tokens. **CIC-IDS-2017 flow CSVs are not
+time-series sequences**, so these RNN/LSTM/Transformer inputs do not represent
+chronological packets or flows.
+
+## Current benchmark
+
+These are the values in the current exported evaluation artifact. Accuracy and
+Macro-F1 are reported as measured; they are not guarantees of correctness.
+
+| Model | Family | Accuracy | Macro-F1 |
+|---|---|---:|---:|
+| XGBoost | Gradient-boosted trees | 98.21% | 93.15% |
+| CNN | Deep learning | 95.72% | 81.32% |
+| ANN | Deep learning | 92.59% | 77.64% |
+| LSTM | Deep learning | 91.42% | 74.88% |
+| RNN | Deep learning | 89.33% | 72.37% |
+| Transformer | Deep learning | 84.17% | 66.30% |
+| Autoencoder | Anomaly detection | 24.63% | 24.42% |
+
+The classifier scores use a stratified random holdout from the same dataset.
+They do **not** establish performance on a different capture, day, network, or
+deployment. Correlated or duplicate flows can make random-split results
+optimistic. The current autoencoder result is weak and should be treated as
+experimental, not as a reliable standalone detector.
+
+## Quick start — Windows PowerShell
+
+From the directory containing the project:
 
 ```powershell
 cd .\IMB
@@ -24,120 +88,109 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Check the actual runtime before training:
+Check which PyTorch device is actually available:
 
 ```powershell
 python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA runtime:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'unavailable')"
 ```
 
-The verified Windows/Python 3.15 CUDA 13 wheel is specified in
-`requirements-cuda.txt`. On this machine, Windows Application Control blocked
-its `torch\lib\c10.dll` at runtime (WinError 4551), so GPU training is currently
-unavailable for PyTorch. Ask the administrator to review/approve the CUDA
-package; do not disable or bypass Application Control. A small XGBoost CUDA
-training smoke test did succeed, so the current training pipeline can use that
-backend separately. Do not treat an NVIDIA driver alone as proof PyTorch is
-using the GPU.
+### Train the models
 
-After administrator approval, install the CUDA build with:
-
-```powershell
-python -m pip install -r requirements-cuda.txt
-```
-
-## Train locally
-
-The training pipeline downloads the public CIC-IDS-2017 flow dataset through
-KaggleHub unless `--dataset-dir` points to an existing extracted dataset:
+The training command downloads the public CIC-IDS-2017 flow dataset through
+KaggleHub. To use an already extracted dataset, pass its directory with
+`--dataset-dir`.
 
 ```powershell
 python -m imb.models.train_models --device cpu --xgboost-device cuda --overwrite-artifacts
 ```
 
-The pipeline uses one shared fitted preprocessing contract, then exports the
-XGBoost classifier, ANN, CNN, RNN, LSTM, Transformer, and benign-only
-autoencoder with their model configurations, labels, anomaly threshold,
-evaluation metrics, and feature order under `artifacts\`. The `--overwrite-artifacts`
-flag replaces existing model artifacts.
+The training pipeline uses a shared fitted preprocessing contract and exports
+the classifier, five neural models, autoencoder, labels, thresholds, metrics,
+and feature order to `artifacts\`. **`--overwrite-artifacts` replaces the
+existing model bundle.**
 
-Until PyTorch CUDA is approved, the command above trains the neural models and
-autoencoder on CPU and XGBoost on CUDA. After approval and once
-`torch.cuda.is_available()` returns `True`, use `--device cuda`; the `auto`
-XGBoost setting will then also select CUDA when supported by its build. The
-CNN retains feature-axis positions, while RNN/LSTM use bidirectional learned
-feature embeddings and pool across the feature axis. The dataset contains
-fixed-width flow vectors, not time-indexed sequences: CNN convolves over
-feature order, and RNN/LSTM/Transformer treat ordered feature indices as
-tokens. These are not temporal sequence models; meaningful temporal learning
-requires flow timestamps and grouping/windowing data.
-
-The default evaluation is a stratified random split from the same dataset. It
-does not establish generalization to a different day, network, or deployment,
-and duplicate or correlated flows may make results optimistic. Read the
-exported metrics and validate with a day- or capture-separated test set before
-using results operationally. Model scores are not guarantees of correctness or
-calibrated probabilities. Anomaly thresholds must also be assessed against
-false-positive and attack-recall requirements.
-
-## Validate and run
-
-Run the automated tests:
+On this machine, the NVIDIA RTX 3050 and driver are visible, but PyTorch CUDA
+is not currently usable: Windows Application Control blocked
+`torch\lib\c10.dll` with WinError 4551. The current environment therefore uses
+CPU PyTorch. The official Python 3.15/CUDA 13 wheel is pinned in
+`requirements-cuda.txt`; an administrator must review and permit it through the
+device's approved application-control policy. Do not disable or bypass that
+policy. After approval, install and verify the CUDA build:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+python -m pip install -r requirements-cuda.txt
+python -c "import torch; print(torch.__version__, torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CUDA unavailable')"
 ```
 
-The detection engine loads the complete artifact bundle and combines the
-XGBoost and neural classifier outputs using `detection.classifier_weights` in
-`config.yaml`. It reports model scores, anomaly score, configured risk, and
-explanations; it does not take network-blocking actions.
+Only when the final check reports CUDA available should PyTorch training use
+`--device cuda`. The XGBoost device is configured separately.
 
-## Run the API and dashboard
+### Run the API and dashboard
 
-Start the API in one PowerShell terminal from the project directory:
+Start the backend in one PowerShell terminal:
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
-In a second terminal, start the dashboard:
+Start the dashboard in another:
 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run dashboard/app.py
 ```
 
-Open the local Streamlit URL printed in the terminal. The dashboard's sidebar
-defaults to `http://127.0.0.1:8000`; change it if the API is listening elsewhere.
-FastAPI's interactive API documentation is available at
-`http://127.0.0.1:8000/docs`.
+Open the Streamlit URL printed in the terminal (normally
+`http://localhost:8501`). The API defaults to `http://127.0.0.1:8000`; its
+interactive documentation is at `http://127.0.0.1:8000/docs`.
 
-The API provides:
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Service and model readiness |
+| `POST /predict` | Predict one flow; include all required feature names |
+| `POST /analyze-file` | Analyze a CSV with the required model features |
+| `GET /alerts` | Page through suspicious detections |
+| `GET /metrics` | Local detection counts and exported evaluation metrics |
 
-- `GET /health` — service, model, device, and feature readiness
-- `POST /predict` — classify one flow; supply every feature name from the
-  exported preprocessing artifact
-- `POST /analyze-file` — analyze a CSV containing every required feature
-- `GET /alerts?limit=100&offset=0` — page through suspicious detections
-- `GET /metrics` — local detection totals and saved evaluation metrics
+CSV uploads are limited to 20 MiB and 10,000 rows by default; adjust
+`api.max_upload_bytes` and `api.max_csv_rows` in `config.yaml` if needed.
+SQLite stores detection results and only an allowlist of flow metadata
+(destination port, flow duration, packet rate, and byte rate), not full
+uploaded rows. Keep the service bound to localhost unless a network-facing
+deployment has been deliberately secured.
 
-CSV uploads are limited by `api.max_upload_bytes` (20 MiB) and
-`api.max_csv_rows` (10,000) in `config.yaml`. SQLite stores the detection
-results and only a small allowlist of flow metadata (destination port, flow
-duration, packet rate, and byte rate); it does not persist full uploaded rows.
-Keep the API bound to localhost unless you have deliberately configured and
-secured a network-facing deployment.
+## Validate
 
-## Project layout
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
 
-- `data\`: raw, processed, and sample flow records
-- `notebooks\`: local experiments
-- `imb\`: preprocessing, models, detection, evaluation, and utilities
-- `artifacts\`: exported models and preprocessing contract
-- `api\`: FastAPI application
-- `dashboard\`: Streamlit interface
-- `database\`: local SQLite database
-- `tests\`: automated tests
+The tests cover preprocessing, model construction, batch prediction, API
+validation, CSV analysis, and SQLite persistence.
 
-Raw data, model artifacts, local database files, virtual environments, and
-credentials are excluded from Git by default. Review dataset licensing and
-remove sensitive information before adding samples to the repository.
+## Project structure
+
+```text
+IMB/
+├── api/                 # FastAPI app, routes, and request/response schemas
+├── artifacts/           # Exported models, preprocessing, labels, and metrics
+├── dashboard/           # Streamlit operations and deep-learning views
+├── data/                # Raw, processed, and sample flow data
+├── database/            # SQLite detection history
+├── imb/                 # Training, preprocessing, models, and detection engine
+├── notebooks/            # Experiments
+├── tests/                # Unit and API tests
+├── config.yaml
+├── requirements.txt
+└── requirements-cuda.txt
+```
+
+Raw datasets, trained model files, local databases, virtual environments, and
+credentials are excluded from Git by default. Review the dataset's terms and
+remove sensitive information before adding any sample data.
+
+## Next validation priorities
+
+Before operational use, evaluate with capture/day-separated data, review
+per-class precision and recall, calibrate risk thresholds against false-positive
+requirements, and improve anomaly detection. The current random-split metrics
+are development benchmarks—not deployment claims.
