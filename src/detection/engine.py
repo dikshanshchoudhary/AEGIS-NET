@@ -37,7 +37,7 @@ class DetectionEngine:
         self,
         *,
         preprocessor: FlowPreprocessor,
-        classifier: xgb.XGBClassifier,
+        classifier: xgb.Booster,
         mlp: torch.nn.Module,
         autoencoder: torch.nn.Module,
         labels: tuple[str, ...],
@@ -139,7 +139,7 @@ class DetectionEngine:
         selected_device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
-        classifier = xgb.XGBClassifier()
+        classifier = xgb.Booster()
         classifier.load_model(artifact_path("classifier"))
         mlp = build_mlp(mlp_config)
         mlp_state = torch.load(
@@ -212,7 +212,7 @@ class DetectionEngine:
         features = self.preprocessor.transform_record(record)
         feature_batch = features.reshape(1, -1)
         xgb_scores_array = np.asarray(
-            self.classifier.predict_proba(feature_batch)[0],
+            self.classifier.predict(xgb.DMatrix(feature_batch))[0],
             dtype=np.float64,
         )
         with torch.no_grad():

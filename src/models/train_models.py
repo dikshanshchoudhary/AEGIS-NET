@@ -182,6 +182,7 @@ def train_and_export(
     xgb_estimators: int,
     epochs: int,
     batch_size: int,
+    anomaly_calibration_quantile: float,
     device: torch.device,
     overwrite: bool,
 ) -> dict[str, Any]:
@@ -234,22 +235,37 @@ def train_and_export(
         device,
     )
 
-    classifier = xgb.XGBClassifier(
-        objective="multi:softprob",
-        num_class=len(class_names),
-        n_estimators=xgb_estimators,
-        max_depth=6,
-        learning_rate=0.1,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        tree_method="hist",
-        eval_metric="mlogloss",
-        n_jobs=min(4, os.cpu_count() or 1),
-        random_state=seed,
-        verbosity=0,
+    train_matrix = xgb.DMatrix(
+        x_train,
+        label=y_train,
+        weight=sample_weights,
     )
-    classifier.fit(x_train, y_train, sample_weight=sample_weights, verbose=False)
-    xgb_predictions = classifier.predict(x_test).astype(np.int64)
+    test_matrix = xgb.DMatrix(x_test)
+    classifier = xgb.train(
+        {
+            "objective": "multi:softprob",
+            "num_class": len(class_names),
+            "max_depth": 6,
+            "eta": 0.1,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "tree_method": "hist",
+            "eval_metric": "mlogloss",
+            "nthread": min(4, os.cpu_count() or 1),
+            "seed": seed,
+            "verbosity": 0,
+        },
+        train_matrix,
+        num_boost_round=xgb_estimators,
+        verbose_eval=False,
+    )
+    xgb_scores = np.asarray(classifier.predict(test_matrix), dtype=np.float64)
+    if xgb_scores.shape != (len(test_indices), len(class_names)):
+        raise ValueError(
+            "XGBoost returned an unexpected probability shape: "
+            f"{xgb_scores.shape}"
+        )
+    xgb_predictions = xgb_scores.argmax(axis=1).astype(np.int64)
     xgb_metrics = _classification_metrics(y_test, xgb_predictions, class_names)
 
     mlp_config: dict[str, object] = {
@@ -359,7 +375,9 @@ def train_and_export(
         device,
         batch_size,
     )
-    anomaly_threshold = float(np.quantile(calibration_errors, 0.995))
+    anomaly_threshold = float(
+        np.quantile(calibration_errors, anomaly_calibration_quantile)
+    )
     test_errors = _reconstruction_errors(autoencoder, x_test, device, batch_size)
     normal_test = np.isin(y_test, normal_class_ids)
     true_anomaly = (~normal_test).astype(np.int64)
@@ -373,7 +391,7 @@ def train_and_export(
         "xgboost": xgb_metrics,
         "mlp": mlp_metrics,
         "autoencoder_anomaly_detection": {
-            "calibration_quantile": 0.995,
+            "calibration_quantile": anomaly_calibration_quantile,
             "reconstruction_mse_threshold": anomaly_threshold,
             **anomaly_metrics,
         },
@@ -400,7 +418,7 @@ def train_and_export(
         "schema_version": 1,
         "autoencoder_score": "mean squared reconstruction error on standardized features",
         "autoencoder_threshold": anomaly_threshold,
-        "calibration_quantile": 0.995,
+        "calibration_quantile": anomaly_calibration_quantile,
         "normal_labels": [class_names[index] for index in normal_class_ids],
     })
     _write_json(paths["metrics"], metrics)
@@ -429,6 +447,7 @@ def train_and_export(
             "xgb_estimators": xgb_estimators,
             "epochs": epochs,
             "batch_size": batch_size,
+            "anomaly_calibration_quantile": anomaly_calibration_quantile,
         },
         "sampled_rows_per_class": sample.sampled_counts,
         "scanned_rows_per_class": sample.scanned_counts,
@@ -464,6 +483,12 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=1_024)
     parser.add_argument(
+        "--anomaly-calibration-quantile",
+        type=float,
+        default=0.95,
+        help="Normal calibration quantile used as the reconstruction-error threshold.",
+    )
+    parser.add_argument(
         "--device",
         choices=("auto", "cpu", "cuda"),
         default="auto",
@@ -476,6 +501,8 @@ def main() -> None:
         parser.error("--test-fraction must be between 0 and 1.")
     if args.epochs < 1 or args.xgb_estimators < 1 or args.batch_size < 1:
         parser.error("--epochs, --xgb-estimators, and --batch-size must be positive.")
+    if not 0 < args.anomaly_calibration_quantile < 1:
+        parser.error("--anomaly-calibration-quantile must be between 0 and 1.")
     if args.device == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA was requested but is not available in this PyTorch installation.")
 
@@ -508,6 +535,7 @@ def main() -> None:
         xgb_estimators=args.xgb_estimators,
         epochs=args.epochs,
         batch_size=args.batch_size,
+        anomaly_calibration_quantile=args.anomaly_calibration_quantile,
         device=device,
         overwrite=args.overwrite_artifacts,
     )
