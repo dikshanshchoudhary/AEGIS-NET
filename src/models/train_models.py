@@ -209,10 +209,10 @@ def _neural_model_configs(
         "transformer": {
             **common,
             "architecture": "feature_transformer_v1",
-            "d_model": 64,
+            "d_model": 32,
             "nhead": 4,
-            "num_layers": 2,
-            "dim_feedforward": 128,
+            "num_layers": 1,
+            "dim_feedforward": 64,
         },
     }
 
