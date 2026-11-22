@@ -13,3 +13,14 @@ paths:
 
 logging:
   level: INFO
+
+detection:
+  classifier_weights:
+    xgboost: 0.65
+    mlp: 0.35
+  risk_weights:
+    attack_probability: 0.7
+    anomaly_score: 0.3
+  risk_levels:
+    medium: 0.35
+    high: 0.7

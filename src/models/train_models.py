@@ -1,0 +1,517 @@
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import platform
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+import xgboost as xgb
+
+from src.models.torch_models import build_autoencoder, build_mlp
+from src.preprocessing.cicids import (
+    DATASET_ID,
+    FlowDatasetSample,
+    download_cicids_dataset,
+    sample_cicids_csvs,
+)
+from src.preprocessing.flow_preprocessor import FlowPreprocessor
+from src.utils.config import PROJECT_ROOT
+from src.utils.logging_config import configure_logging
+
+
+LOGGER = logging.getLogger(__name__)
+ARTIFACT_ROOT = PROJECT_ROOT / "artifacts"
+NORMAL_LABELS = {"benign", "normal"}
+
+
+def _stratified_split(
+    labels: np.ndarray,
+    class_count: int,
+    test_fraction: float,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    rng = np.random.default_rng(seed)
+    train_parts: list[np.ndarray] = []
+    test_parts: list[np.ndarray] = []
+    singleton_classes: list[int] = []
+
+    for class_index in range(class_count):
+        indices = np.flatnonzero(labels == class_index)
+        rng.shuffle(indices)
+        if len(indices) < 2:
+            train_parts.append(indices)
+            singleton_classes.append(class_index)
+            continue
+        test_count = max(1, int(round(len(indices) * test_fraction)))
+        test_count = min(test_count, len(indices) - 1)
+        test_parts.append(indices[:test_count])
+        train_parts.append(indices[test_count:])
+
+    if not test_parts:
+        raise ValueError("No class has enough samples for a held-out evaluation split.")
+    return np.concatenate(train_parts), np.concatenate(test_parts), singleton_classes
+
+
+def _classification_metrics(
+    truth: np.ndarray,
+    predictions: np.ndarray,
+    class_names: list[str],
+) -> dict[str, Any]:
+    confusion = np.zeros((len(class_names), len(class_names)), dtype=np.int64)
+    np.add.at(confusion, (truth, predictions), 1)
+    support = confusion.sum(axis=1)
+    predicted_count = confusion.sum(axis=0)
+    true_positive = np.diag(confusion)
+    precision = np.divide(
+        true_positive,
+        predicted_count,
+        out=np.zeros_like(true_positive, dtype=np.float64),
+        where=predicted_count != 0,
+    )
+    recall = np.divide(
+        true_positive,
+        support,
+        out=np.zeros_like(true_positive, dtype=np.float64),
+        where=support != 0,
+    )
+    f1 = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(precision),
+        where=(precision + recall) != 0,
+    )
+    evaluated = support > 0
+
+    return {
+        "accuracy": float(true_positive.sum() / max(int(support.sum()), 1)),
+        "macro_f1": float(f1[evaluated].mean()) if evaluated.any() else 0.0,
+        "macro_f1_classes": [
+            name for name, has_support in zip(class_names, evaluated) if has_support
+        ],
+        "per_class": {
+            name: {
+                "precision": float(precision[index]),
+                "recall": float(recall[index]),
+                "f1": float(f1[index]),
+                "support": int(support[index]),
+            }
+            for index, name in enumerate(class_names)
+        },
+        "confusion_matrix": confusion.tolist(),
+    }
+
+
+def _predict_mlp(
+    model: nn.Module,
+    features: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    probabilities: list[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, len(features), batch_size):
+            batch = torch.from_numpy(features[start:start + batch_size]).to(device)
+            probabilities.append(torch.softmax(model(batch), dim=1).cpu().numpy())
+    if not probabilities:
+        return np.empty((0, 0), dtype=np.float32), np.empty(0, dtype=np.int64)
+    scores = np.concatenate(probabilities)
+    return scores, scores.argmax(axis=1)
+
+
+def _reconstruction_errors(
+    model: nn.Module,
+    features: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+) -> np.ndarray:
+    model.eval()
+    errors: list[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, len(features), batch_size):
+            batch = torch.from_numpy(features[start:start + batch_size]).to(device)
+            scores = torch.mean((model(batch) - batch) ** 2, dim=1)
+            errors.append(scores.cpu().numpy())
+    return np.concatenate(errors) if errors else np.empty(0, dtype=np.float32)
+
+
+def _package_version(package: str) -> str:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return "not-installed"
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as output:
+        json.dump(payload, output, indent=2, allow_nan=False)
+
+
+def _artifact_paths() -> dict[str, Path]:
+    return {
+        "classifier": ARTIFACT_ROOT / "classifiers" / "xgboost_classifier.json",
+        "mlp": ARTIFACT_ROOT / "classifiers" / "mlp_state_dict.pt",
+        "mlp_config": ARTIFACT_ROOT / "classifiers" / "mlp_config.json",
+        "autoencoder": ARTIFACT_ROOT / "autoencoders" / "autoencoder_state_dict.pt",
+        "autoencoder_config": ARTIFACT_ROOT / "autoencoders" / "autoencoder_config.json",
+        "preprocessing": ARTIFACT_ROOT / "preprocessing" / "preprocessing.json",
+        "labels": ARTIFACT_ROOT / "preprocessing" / "labels.json",
+        "thresholds": ARTIFACT_ROOT / "preprocessing" / "thresholds.json",
+        "metrics": ARTIFACT_ROOT / "preprocessing" / "evaluation_metrics.json",
+        "manifest": ARTIFACT_ROOT / "manifest.json",
+    }
+
+
+def train_and_export(
+    sample: FlowDatasetSample,
+    *,
+    max_rows_per_class: int,
+    test_fraction: float,
+    seed: int,
+    xgb_estimators: int,
+    epochs: int,
+    batch_size: int,
+    device: torch.device,
+    overwrite: bool,
+) -> dict[str, Any]:
+    paths = _artifact_paths()
+    existing = [path for path in paths.values() if path.exists()]
+    if existing and not overwrite:
+        raise FileExistsError(
+            "Model artifacts already exist. Review them and rerun with "
+            "--overwrite-artifacts to replace: "
+            + ", ".join(str(path) for path in existing)
+        )
+
+    class_names = sorted(set(str(label) for label in sample.labels))
+    class_to_index = {name: index for index, name in enumerate(class_names)}
+    labels = np.asarray(
+        [class_to_index[str(label)] for label in sample.labels],
+        dtype=np.int64,
+    )
+    train_indices, test_indices, singleton_classes = _stratified_split(
+        labels,
+        len(class_names),
+        test_fraction,
+        seed,
+    )
+    train_frame = sample.features.iloc[train_indices].reset_index(drop=True)
+    test_frame = sample.features.iloc[test_indices].reset_index(drop=True)
+    y_train = labels[train_indices]
+    y_test = labels[test_indices]
+
+    preprocessor = FlowPreprocessor.fit(
+        train_frame,
+        list(sample.features.columns),
+    )
+    x_train = preprocessor.transform_frame(train_frame)
+    x_test = preprocessor.transform_frame(test_frame)
+    if not np.isfinite(x_train).all() or not np.isfinite(x_test).all():
+        raise ValueError("Preprocessing produced non-finite model inputs.")
+
+    class_counts = np.bincount(y_train, minlength=len(class_names))
+    if np.any(class_counts == 0):
+        absent = [class_names[index] for index, count in enumerate(class_counts) if count == 0]
+        raise ValueError(f"Training split is missing classes: {absent}")
+    class_weights = len(y_train) / (len(class_names) * class_counts)
+    sample_weights = class_weights[y_train]
+    LOGGER.info(
+        "Training with %d rows, %d features, %d classes on %s",
+        len(y_train),
+        len(preprocessor.feature_names),
+        len(class_names),
+        device,
+    )
+
+    classifier = xgb.XGBClassifier(
+        objective="multi:softprob",
+        num_class=len(class_names),
+        n_estimators=xgb_estimators,
+        max_depth=6,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        tree_method="hist",
+        eval_metric="mlogloss",
+        n_jobs=min(4, os.cpu_count() or 1),
+        random_state=seed,
+        verbosity=0,
+    )
+    classifier.fit(x_train, y_train, sample_weight=sample_weights, verbose=False)
+    xgb_predictions = classifier.predict(x_test).astype(np.int64)
+    xgb_metrics = _classification_metrics(y_test, xgb_predictions, class_names)
+
+    mlp_config: dict[str, object] = {
+        "architecture": "dense_mlp_v1",
+        "input_size": len(preprocessor.feature_names),
+        "num_classes": len(class_names),
+        "hidden_sizes": [128, 64],
+        "dropout": 0.1,
+    }
+    torch.manual_seed(seed)
+    mlp = build_mlp(mlp_config).to(device)
+    train_loader = DataLoader(
+        TensorDataset(
+            torch.from_numpy(x_train),
+            torch.from_numpy(y_train),
+        ),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+    )
+    loss_weights = torch.tensor(class_weights, dtype=torch.float32, device=device)
+    mlp_loss = nn.CrossEntropyLoss(weight=loss_weights)
+    mlp_optimizer = torch.optim.AdamW(mlp.parameters(), lr=1e-3)
+    for epoch in range(epochs):
+        mlp.train()
+        total_loss = 0.0
+        for batch_features, batch_labels in train_loader:
+            batch_features = batch_features.to(device)
+            batch_labels = batch_labels.to(device)
+            mlp_optimizer.zero_grad(set_to_none=True)
+            loss = mlp_loss(mlp(batch_features), batch_labels)
+            loss.backward()
+            mlp_optimizer.step()
+            total_loss += loss.item() * len(batch_features)
+        LOGGER.info(
+            "MLP epoch %d/%d loss=%.6f",
+            epoch + 1,
+            epochs,
+            total_loss / len(x_train),
+        )
+    _, mlp_predictions = _predict_mlp(mlp, x_test, device, batch_size)
+    mlp_metrics = _classification_metrics(y_test, mlp_predictions, class_names)
+
+    normal_class_ids = [
+        index for index, name in enumerate(class_names)
+        if name.strip().casefold() in NORMAL_LABELS
+    ]
+    if not normal_class_ids:
+        raise ValueError(f"No BENIGN/Normal class found in labels: {class_names}")
+    normal_training = x_train[np.isin(y_train, normal_class_ids)]
+    if len(normal_training) < 20:
+        raise ValueError(
+            f"At least 20 normal training rows are required; found {len(normal_training)}."
+        )
+
+    rng = np.random.default_rng(seed + 2)
+    normal_order = rng.permutation(len(normal_training))
+    calibration_size = max(10, int(round(len(normal_training) * 0.2)))
+    if calibration_size >= len(normal_training):
+        raise ValueError("Not enough normal rows for fit and calibration subsets.")
+    calibration = normal_training[normal_order[:calibration_size]]
+    autoencoder_training = normal_training[normal_order[calibration_size:]]
+
+    autoencoder_config: dict[str, object] = {
+        "architecture": "dense_autoencoder_v1",
+        "input_size": len(preprocessor.feature_names),
+        "layer_sizes": [
+            len(preprocessor.feature_names),
+            128,
+            64,
+            32,
+            64,
+            128,
+            len(preprocessor.feature_names),
+        ],
+        "activation": "relu",
+    }
+    torch.manual_seed(seed + 1)
+    autoencoder = build_autoencoder(autoencoder_config).to(device)
+    autoencoder_loader = DataLoader(
+        TensorDataset(torch.from_numpy(autoencoder_training)),
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+    )
+    autoencoder_optimizer = torch.optim.AdamW(autoencoder.parameters(), lr=1e-3)
+    for epoch in range(epochs):
+        autoencoder.train()
+        total_loss = 0.0
+        for (batch_features,) in autoencoder_loader:
+            batch_features = batch_features.to(device)
+            autoencoder_optimizer.zero_grad(set_to_none=True)
+            loss = torch.mean((autoencoder(batch_features) - batch_features) ** 2)
+            loss.backward()
+            autoencoder_optimizer.step()
+            total_loss += loss.item() * len(batch_features)
+        LOGGER.info(
+            "Autoencoder epoch %d/%d loss=%.6f",
+            epoch + 1,
+            epochs,
+            total_loss / len(autoencoder_training),
+        )
+
+    calibration_errors = _reconstruction_errors(
+        autoencoder,
+        calibration,
+        device,
+        batch_size,
+    )
+    anomaly_threshold = float(np.quantile(calibration_errors, 0.995))
+    test_errors = _reconstruction_errors(autoencoder, x_test, device, batch_size)
+    normal_test = np.isin(y_test, normal_class_ids)
+    true_anomaly = (~normal_test).astype(np.int64)
+    predicted_anomaly = (test_errors > anomaly_threshold).astype(np.int64)
+    anomaly_metrics = _classification_metrics(
+        true_anomaly,
+        predicted_anomaly,
+        ["normal", "anomaly"],
+    )
+    metrics: dict[str, Any] = {
+        "xgboost": xgb_metrics,
+        "mlp": mlp_metrics,
+        "autoencoder_anomaly_detection": {
+            "calibration_quantile": 0.995,
+            "reconstruction_mse_threshold": anomaly_threshold,
+            **anomaly_metrics,
+        },
+        "test_rows": int(len(test_indices)),
+        "test_class_support": {
+            name: int(np.sum(y_test == index))
+            for index, name in enumerate(class_names)
+        },
+        "single_sample_classes_kept_out_of_test": [
+            class_names[index] for index in singleton_classes
+        ],
+    }
+
+    for path in paths.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+    classifier.save_model(str(paths["classifier"]))
+    torch.save(mlp.cpu().state_dict(), paths["mlp"])
+    torch.save(autoencoder.cpu().state_dict(), paths["autoencoder"])
+    preprocessor.save(paths["preprocessing"])
+    _write_json(paths["mlp_config"], mlp_config)
+    _write_json(paths["autoencoder_config"], autoencoder_config)
+    _write_json(paths["labels"], {"schema_version": 1, "classes": class_names})
+    _write_json(paths["thresholds"], {
+        "schema_version": 1,
+        "autoencoder_score": "mean squared reconstruction error on standardized features",
+        "autoencoder_threshold": anomaly_threshold,
+        "calibration_quantile": 0.995,
+        "normal_labels": [class_names[index] for index in normal_class_ids],
+    })
+    _write_json(paths["metrics"], metrics)
+
+    manifest = {
+        "schema_version": 1,
+        "project": "AEGIS-NET",
+        "dataset": DATASET_ID,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "python_version": platform.python_version(),
+        "device": str(device),
+        "libraries": {
+            "numpy": np.__version__,
+            "pandas": pd.__version__,
+            "xgboost": xgb.__version__,
+            "torch": torch.__version__,
+        },
+        "feature_count": len(preprocessor.feature_names),
+        "feature_order": list(preprocessor.feature_names),
+        "classes": class_names,
+        "normal_labels": [class_names[index] for index in normal_class_ids],
+        "training_parameters": {
+            "seed": seed,
+            "max_rows_per_class": max_rows_per_class,
+            "test_fraction": test_fraction,
+            "xgb_estimators": xgb_estimators,
+            "epochs": epochs,
+            "batch_size": batch_size,
+        },
+        "sampled_rows_per_class": sample.sampled_counts,
+        "scanned_rows_per_class": sample.scanned_counts,
+        "score_semantics": (
+            "Classifier scores are model outputs, not guarantees of correctness "
+            "and not calibrated unless separately validated."
+        ),
+        "artifacts": {
+            name: str(path.relative_to(ARTIFACT_ROOT)).replace("\\", "/")
+            for name, path in paths.items()
+        },
+    }
+    _write_json(paths["manifest"], manifest)
+    LOGGER.info("Evaluation metrics:\n%s", json.dumps(metrics, indent=2))
+    LOGGER.info("Artifacts saved under %s", ARTIFACT_ROOT)
+    return metrics
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Train AEGIS-NET models from CIC-IDS-2017 flow CSVs."
+    )
+    parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        help="Existing extracted dataset directory; downloads through KaggleHub if omitted.",
+    )
+    parser.add_argument("--max-rows-per-class", type=int, default=5_000)
+    parser.add_argument("--chunk-rows", type=int, default=100_000)
+    parser.add_argument("--test-fraction", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--xgb-estimators", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=1_024)
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+    )
+    parser.add_argument("--overwrite-artifacts", action="store_true")
+    args = parser.parse_args()
+
+    configure_logging("INFO")
+    if not 0 < args.test_fraction < 1:
+        parser.error("--test-fraction must be between 0 and 1.")
+    if args.epochs < 1 or args.xgb_estimators < 1 or args.batch_size < 1:
+        parser.error("--epochs, --xgb-estimators, and --batch-size must be positive.")
+    if args.device == "cuda" and not torch.cuda.is_available():
+        parser.error("CUDA was requested but is not available in this PyTorch installation.")
+
+    if args.dataset_dir is None:
+        dataset_dir = download_cicids_dataset()
+    else:
+        dataset_dir = args.dataset_dir.resolve()
+    if not dataset_dir.is_dir():
+        raise NotADirectoryError(f"Dataset directory does not exist: {dataset_dir}")
+
+    sample = sample_cicids_csvs(
+        dataset_dir,
+        max_rows_per_class=args.max_rows_per_class,
+        chunk_rows=args.chunk_rows,
+        seed=args.seed,
+    )
+    device = torch.device(
+        "cuda" if args.device == "cuda" or (
+            args.device == "auto" and torch.cuda.is_available()
+        ) else "cpu"
+    )
+    if device.type == "cpu":
+        torch.set_num_threads(min(4, os.cpu_count() or 1))
+
+    train_and_export(
+        sample,
+        max_rows_per_class=args.max_rows_per_class,
+        test_fraction=args.test_fraction,
+        seed=args.seed,
+        xgb_estimators=args.xgb_estimators,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        device=device,
+        overwrite=args.overwrite_artifacts,
+    )
+
+
+if __name__ == "__main__":
+    main()
