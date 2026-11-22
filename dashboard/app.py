@@ -324,7 +324,7 @@ st.markdown(
       <div class="imb-eyebrow"><span class="imb-live-dot"></span>
         Defensive network intelligence · offline analysis
       </div>
-      <h1>AEGIS<span>-NET</span></h1>
+      <h1>IMB</h1>
       <p>One flow at a time. Multiple model perspectives. Clear, explainable risk signals.</p>
       <div class="imb-badges">
         <span class="imb-badge good">DETECTION ENGINE ONLINE</span>
@@ -411,7 +411,6 @@ with overview_tab:
             st.dataframe(
                 pd.DataFrame(alert_rows),
                 hide_index=True,
-                use_container_width=True,
             )
         else:
             st.info("No suspicious flows have been recorded.")
@@ -457,7 +456,6 @@ with deep_learning_tab:
     st.dataframe(
         benchmark_frame.round({"Accuracy (%)": 2, "Macro-F1 (%)": 2}),
         hide_index=True,
-        use_container_width=True,
     )
     st.caption(
         "CNN, RNN, LSTM, and Transformer inputs are fixed-width flow features "
@@ -518,7 +516,7 @@ with analysis_tab:
                 )
                 selected_row = preview.iloc[int(row_number)]
                 with st.expander("Selected input row"):
-                    st.dataframe(selected_row.to_frame("Value"), use_container_width=True)
+                    st.dataframe(selected_row.to_frame("Value"))
 
                 prediction_column, file_column = st.columns(2)
                 with prediction_column:
@@ -569,7 +567,6 @@ with analysis_tab:
                         st.dataframe(
                             vote_frame,
                             hide_index=True,
-                            use_container_width=True,
                         )
                         st.json(result)
 
@@ -618,7 +615,6 @@ with analysis_tab:
                             ]
                         ),
                         hide_index=True,
-                        use_container_width=True,
                     )
                     summary_columns[1].write("Risk distribution")
                     summary_columns[1].dataframe(
@@ -629,12 +625,10 @@ with analysis_tab:
                             ]
                         ),
                         hide_index=True,
-                        use_container_width=True,
                     )
                     if analysis["alert_examples"]:
                         st.write("Suspicious examples")
                         st.dataframe(
                             pd.DataFrame(analysis["alert_examples"]),
                             hide_index=True,
-                            use_container_width=True,
                         )
