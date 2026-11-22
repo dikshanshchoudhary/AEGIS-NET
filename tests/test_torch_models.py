@@ -37,17 +37,20 @@ def test_all_requested_neural_classifiers_accept_fixed_width_flow_features():
         },
         "cnn": {
             **common,
-            "architecture": "feature_cnn1d_v1",
+            "architecture": "feature_cnn1d_v2",
             "channels": 4,
+            "head_size": 8,
         },
         "rnn": {
             **common,
-            "architecture": "feature_rnn_v1",
+            "architecture": "feature_rnn_v2",
+            "embedding_size": 4,
             "hidden_size": 8,
         },
         "lstm": {
             **common,
-            "architecture": "feature_lstm_v1",
+            "architecture": "feature_lstm_v2",
+            "embedding_size": 4,
             "hidden_size": 8,
         },
         "transformer": {
@@ -63,3 +66,28 @@ def test_all_requested_neural_classifiers_accept_fixed_width_flow_features():
     values = torch.zeros((2, 6))
     for model_name, config in configs.items():
         assert build_classifier(config)(values).shape == (2, 3), model_name
+
+
+def test_legacy_feature_classifier_artifacts_remain_loadable():
+    common = {"input_size": 6, "num_classes": 3, "dropout": 0.1}
+    configs = (
+        {
+            **common,
+            "architecture": "feature_cnn1d_v1",
+            "channels": 4,
+        },
+        {
+            **common,
+            "architecture": "feature_rnn_v1",
+            "hidden_size": 8,
+        },
+        {
+            **common,
+            "architecture": "feature_lstm_v1",
+            "hidden_size": 8,
+        },
+    )
+    values = torch.zeros((2, 6))
+
+    for config in configs:
+        assert build_classifier(config)(values).shape == (2, 3)

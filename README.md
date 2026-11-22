@@ -64,10 +64,12 @@ Until PyTorch CUDA is approved, the command above trains the neural models and
 autoencoder on CPU and XGBoost on CUDA. After approval and once
 `torch.cuda.is_available()` returns `True`, use `--device cuda`; the `auto`
 XGBoost setting will then also select CUDA when supported by its build. The
-dataset contains fixed-width flow vectors, not time-indexed sequences: CNN
-convolves over feature order, and RNN/LSTM/Transformer treat ordered feature
-indices as tokens. These are not temporal sequence models; meaningful temporal
-learning requires flow timestamps and grouping/windowing data.
+CNN retains feature-axis positions, while RNN/LSTM use bidirectional learned
+feature embeddings and pool across the feature axis. The dataset contains
+fixed-width flow vectors, not time-indexed sequences: CNN convolves over
+feature order, and RNN/LSTM/Transformer treat ordered feature indices as
+tokens. These are not temporal sequence models; meaningful temporal learning
+requires flow timestamps and grouping/windowing data.
 
 The default evaluation is a stratified random split from the same dataset. It
 does not establish generalization to a different day, network, or deployment,

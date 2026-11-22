@@ -43,12 +43,21 @@ def build_ann(config: Mapping[str, object]) -> nn.Sequential:
 
 
 def build_cnn(config: Mapping[str, object]) -> nn.Module:
-    if config.get("architecture") != "feature_cnn1d_v1":
+    if config.get("architecture") not in {"feature_cnn1d_v1", "feature_cnn1d_v2"}:
         raise ValueError("Unsupported CNN architecture.")
-    _positive_integer(config, "input_size")
+    input_size = _positive_integer(config, "input_size")
     num_classes = _positive_integer(config, "num_classes", minimum=2)
     channels = _positive_integer(config, "channels")
     dropout = _dropout(config)
+    if config.get("architecture") == "feature_cnn1d_v2":
+        head_size = _positive_integer(config, "head_size")
+        return _FeatureAxisCNN(
+            input_size=input_size,
+            num_classes=num_classes,
+            channels=channels,
+            head_size=head_size,
+            dropout=dropout,
+        )
     return nn.Sequential(
         _FeatureAxisInput(),
         nn.Conv1d(1, channels, kernel_size=3, padding=1),
@@ -60,6 +69,48 @@ def build_cnn(config: Mapping[str, object]) -> nn.Module:
         nn.Dropout(dropout),
         nn.Linear(channels * 2, num_classes),
     )
+
+
+class _FeatureAxisCNN(nn.Module):
+    def __init__(
+        self,
+        *,
+        input_size: int,
+        num_classes: int,
+        channels: int,
+        head_size: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.input_size = input_size
+        self.encoder = nn.Sequential(
+            nn.Conv1d(1, channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(channels),
+            nn.GELU(),
+            nn.Conv1d(
+                channels,
+                channels * 2,
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            nn.BatchNorm1d(channels * 2),
+            nn.GELU(),
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(channels * 2 * input_size, head_size),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(head_size, num_classes),
+        )
+
+    def forward(self, values: Tensor) -> Tensor:
+        if values.ndim != 2 or values.shape[1] != self.input_size:
+            raise ValueError(
+                f"Expected a (batch, {self.input_size}) feature tensor."
+            )
+        return self.classifier(self.encoder(values.unsqueeze(1)))
 
 
 class _FeatureAxisInput(nn.Module):
@@ -110,6 +161,64 @@ class _RecurrentFeatureModel(nn.Module):
         return self.classifier(self.dropout(outputs[:, -1, :]))
 
 
+class _BidirectionalFeatureModel(nn.Module):
+    def __init__(
+        self,
+        *,
+        input_size: int,
+        num_classes: int,
+        embedding_size: int,
+        hidden_size: int,
+        dropout: float,
+        recurrent_type: str,
+    ) -> None:
+        super().__init__()
+        self.input_size = input_size
+        self.input_projection = nn.Linear(1, embedding_size)
+        self.position_embedding = nn.Parameter(
+            torch.empty(1, input_size, embedding_size)
+        )
+        nn.init.normal_(self.position_embedding, mean=0.0, std=0.02)
+        self.input_norm = nn.LayerNorm(embedding_size)
+        if recurrent_type == "rnn":
+            self.encoder = nn.RNN(
+                input_size=embedding_size,
+                hidden_size=hidden_size,
+                batch_first=True,
+                bidirectional=True,
+                nonlinearity="tanh",
+            )
+        elif recurrent_type == "lstm":
+            self.encoder = nn.LSTM(
+                input_size=embedding_size,
+                hidden_size=hidden_size,
+                batch_first=True,
+                bidirectional=True,
+            )
+        else:
+            raise ValueError(f"Unsupported recurrent type: {recurrent_type}")
+        pooled_size = hidden_size * 4
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(pooled_size),
+            nn.Linear(pooled_size, hidden_size * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size * 2, num_classes),
+        )
+
+    def forward(self, values: Tensor) -> Tensor:
+        if values.ndim != 2 or values.shape[1] != self.input_size:
+            raise ValueError(
+                f"Expected a (batch, {self.input_size}) feature tensor."
+            )
+        tokens = self.input_projection(values.unsqueeze(-1))
+        tokens = self.input_norm(tokens + self.position_embedding)
+        encoded = self.encoder(tokens)
+        outputs = encoded[0] if isinstance(encoded, tuple) else encoded
+        pooled = torch.cat((outputs.mean(dim=1), outputs.amax(dim=1)), dim=1)
+        return self.classifier(pooled)
+
+
 class _TransformerFeatureModel(nn.Module):
     def __init__(
         self,
@@ -153,8 +262,18 @@ class _TransformerFeatureModel(nn.Module):
 
 
 def build_rnn(config: Mapping[str, object]) -> nn.Module:
-    if config.get("architecture") != "feature_rnn_v1":
+    architecture = config.get("architecture")
+    if architecture not in {"feature_rnn_v1", "feature_rnn_v2"}:
         raise ValueError("Unsupported RNN architecture.")
+    if architecture == "feature_rnn_v2":
+        return _BidirectionalFeatureModel(
+            input_size=_positive_integer(config, "input_size"),
+            num_classes=_positive_integer(config, "num_classes", minimum=2),
+            embedding_size=_positive_integer(config, "embedding_size"),
+            hidden_size=_positive_integer(config, "hidden_size"),
+            dropout=_dropout(config),
+            recurrent_type="rnn",
+        )
     return _RecurrentFeatureModel(
         input_size=_positive_integer(config, "input_size"),
         num_classes=_positive_integer(config, "num_classes", minimum=2),
@@ -165,8 +284,18 @@ def build_rnn(config: Mapping[str, object]) -> nn.Module:
 
 
 def build_lstm(config: Mapping[str, object]) -> nn.Module:
-    if config.get("architecture") != "feature_lstm_v1":
+    architecture = config.get("architecture")
+    if architecture not in {"feature_lstm_v1", "feature_lstm_v2"}:
         raise ValueError("Unsupported LSTM architecture.")
+    if architecture == "feature_lstm_v2":
+        return _BidirectionalFeatureModel(
+            input_size=_positive_integer(config, "input_size"),
+            num_classes=_positive_integer(config, "num_classes", minimum=2),
+            embedding_size=_positive_integer(config, "embedding_size"),
+            hidden_size=_positive_integer(config, "hidden_size"),
+            dropout=_dropout(config),
+            recurrent_type="lstm",
+        )
     return _RecurrentFeatureModel(
         input_size=_positive_integer(config, "input_size"),
         num_classes=_positive_integer(config, "num_classes", minimum=2),
@@ -228,8 +357,11 @@ def build_classifier(config: Mapping[str, object]) -> nn.Module:
         "dense_ann_v1": build_ann,
         "dense_mlp_v1": build_ann,
         "feature_cnn1d_v1": build_cnn,
+        "feature_cnn1d_v2": build_cnn,
         "feature_rnn_v1": build_rnn,
+        "feature_rnn_v2": build_rnn,
         "feature_lstm_v1": build_lstm,
+        "feature_lstm_v2": build_lstm,
         "feature_transformer_v1": build_transformer,
     }
     factory = factories.get(architecture)

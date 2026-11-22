@@ -193,17 +193,20 @@ def _neural_model_configs(
         },
         "cnn": {
             **common,
-            "architecture": "feature_cnn1d_v1",
-            "channels": 32,
+            "architecture": "feature_cnn1d_v2",
+            "channels": 16,
+            "head_size": 128,
         },
         "rnn": {
             **common,
-            "architecture": "feature_rnn_v1",
+            "architecture": "feature_rnn_v2",
+            "embedding_size": 16,
             "hidden_size": 64,
         },
         "lstm": {
             **common,
-            "architecture": "feature_lstm_v1",
+            "architecture": "feature_lstm_v2",
+            "embedding_size": 16,
             "hidden_size": 64,
         },
         "transformer": {
