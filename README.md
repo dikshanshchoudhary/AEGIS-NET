@@ -78,10 +78,11 @@ experimental, not as a reliable standalone detector.
 
 ## Quick start — Windows PowerShell
 
-From the directory containing the project:
+The product is branded **IMB**; the local project folder remains `AEGIS-NET`.
+From its parent directory, run:
 
 ```powershell
-cd .\IMB
+cd .\AEGIS-NET
 py -3.15 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
@@ -170,7 +171,7 @@ validation, CSV analysis, and SQLite persistence.
 ## Project structure
 
 ```text
-IMB/
+AEGIS-NET/
 ├── api/                 # FastAPI app, routes, and request/response schemas
 ├── artifacts/           # Exported models, preprocessing, labels, and metrics
 ├── dashboard/           # Streamlit operations and deep-learning views
