@@ -1,18 +1,20 @@
 # AEGIS-NET
 
-AI-powered network threat detection for offline flow records and authorized lab
-traffic. The application is intended for detection and analysis; it does not
-automatically block network traffic.
+AI-powered threat detection for offline network-flow records and authorized lab
+traffic. The application is detection-only and does not automatically block
+network traffic.
 
 ## Requirements
 
-- Windows 11
-- Python 3.15 (64-bit)
+- Windows 11, 64-bit
+- Python 3.15
+- NVIDIA GPU and a compatible driver for CUDA training (the local setup uses a
+  CUDA 13 PyTorch wheel)
 - Git
 
-## Stage 1: local setup
+## Local setup
 
-Run these commands in PowerShell from the directory containing this project:
+From the folder containing the project, run in PowerShell:
 
 ```powershell
 cd .\AEGIS-NET
@@ -20,74 +22,85 @@ py -3.15 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-git init
-git branch -M main
 ```
 
-If PowerShell prevents virtual-environment activation, allow it only for the
-current terminal with:
+Check the actual runtime before training:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
+python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA runtime:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'unavailable')"
 ```
 
-The requirements file provides version ranges, but not every dependency may
-publish a Python 3.15-compatible build yet. If installation fails, use the
-reported package error to determine whether a compatible release is available;
-do not silently change versions in a way that could break Colab artifact
-compatibility. PyTorch is listed as a dependency; GPU/CUDA availability depends
-on the installed PyTorch build and the local NVIDIA driver. Verify it after
-setup with:
+The verified Windows/Python 3.15 CUDA 13 wheel is specified in
+`requirements-cuda.txt`. On this machine, Windows Application Control blocked
+its `torch\lib\c10.dll` at runtime (WinError 4551), so GPU training is currently
+unavailable for PyTorch. Ask the administrator to review/approve the CUDA
+package; do not disable or bypass Application Control. A small XGBoost CUDA
+training smoke test did succeed, so the current training pipeline can use that
+backend separately. Do not treat an NVIDIA driver alone as proof PyTorch is
+using the GPU.
+
+After administrator approval, install the CUDA build with:
 
 ```powershell
-python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+python -m pip install -r requirements-cuda.txt
 ```
 
-If an import fails with `An Application Control policy has blocked this file`,
-ask your administrator to review the blocked package DLLs or use an
-organization-approved Python environment. Do not disable or bypass Windows
-application-control policies.
+## Train locally
 
-Raw and processed traffic data, model artifacts, local database files, virtual
-environments, and credentials are excluded from Git by default. Review dataset
-licenses and remove sensitive information before adding samples to the
-repository.
+The training pipeline downloads the public CIC-IDS-2017 flow dataset through
+KaggleHub unless `--dataset-dir` points to an existing extracted dataset:
+
+```powershell
+python -m src.models.train_models --device cpu --xgboost-device cuda --overwrite-artifacts
+```
+
+The pipeline uses one shared fitted preprocessing contract, then exports the
+XGBoost classifier, ANN, CNN, RNN, LSTM, Transformer, and benign-only
+autoencoder with their model configurations, labels, anomaly threshold,
+evaluation metrics, and feature order under `artifacts\`. The `--overwrite-artifacts`
+flag replaces existing model artifacts.
+
+Until PyTorch CUDA is approved, the command above trains the neural models and
+autoencoder on CPU and XGBoost on CUDA. After approval and once
+`torch.cuda.is_available()` returns `True`, use `--device cuda`; the `auto`
+XGBoost setting will then also select CUDA when supported by its build. The
+dataset contains fixed-width flow vectors, not time-indexed sequences: CNN
+convolves over feature order, and RNN/LSTM/Transformer treat ordered feature
+indices as tokens. These are not temporal sequence models; meaningful temporal
+learning requires flow timestamps and grouping/windowing data.
+
+The default evaluation is a stratified random split from the same dataset. It
+does not establish generalization to a different day, network, or deployment,
+and duplicate or correlated flows may make results optimistic. Read the
+exported metrics and validate with a day- or capture-separated test set before
+using results operationally. Model scores are not guarantees of correctness or
+calibrated probabilities. Anomaly thresholds must also be assessed against
+false-positive and attack-recall requirements.
+
+## Validate and run
+
+Run the automated tests:
+
+```powershell
+python -m pytest -q
+```
+
+The detection engine loads the complete artifact bundle and combines the
+XGBoost and neural classifier outputs using `detection.classifier_weights` in
+`config.yaml`. It reports model scores, anomaly score, configured risk, and
+explanations; it does not take network-blocking actions.
 
 ## Project layout
 
-- `data/`: raw, processed, and sample flow records
-- `notebooks/`: experiments and model-integration notes
-- `src/`: preprocessing, feature extraction, models, detection, evaluation, and utilities
-- `artifacts/`: exported classifiers, autoencoders, and preprocessing artifacts
-- `api/`: FastAPI application
-- `dashboard/`: Streamlit interface
-- `database/`: local SQLite database
-- `tests/`: automated tests
+- `data\`: raw, processed, and sample flow records
+- `notebooks\`: local experiments
+- `src\`: preprocessing, models, detection, evaluation, and utilities
+- `artifacts\`: exported models and preprocessing contract
+- `api\`: FastAPI application
+- `dashboard\`: Streamlit interface
+- `database\`: local SQLite database
+- `tests\`: automated tests
 
-Model integration will use the exported Colab artifacts and their exact
-training-time preprocessing, feature names, and feature ordering. Do not
-recreate or infer those transformations in this application.
-
-## Stage 2: train and export in Colab
-
-Open [notebooks/aegis_kaggle_train_export.ipynb](./notebooks/aegis_kaggle_train_export.ipynb)
-in Google Colab and run its cells. The notebook downloads the Kaggle
-CIC-IDS-2017 CSVs, fits preprocessing on its training partition, trains the
-classifier and neural models, measures evaluation metrics, and downloads a
-versioned artifact bundle. Training results are produced only when the notebook
-runs; none are assumed here.
-
-After downloading `aegis_artifact_bundle.zip`, copy it into the project root
-and extract its contents into `artifacts`:
-
-```powershell
-Expand-Archive -LiteralPath .\aegis_artifact_bundle.zip -DestinationPath .\artifacts
-```
-
-Keep the exported manifest, feature order, preprocessing parameters, model
-configs, and thresholds together. Application inference integration and
-artifact-compatibility tests should use that exact bundle; do not substitute
-locally inferred transformations. The local Windows runtime currently needs
-administrator review of Application Control blocks before scikit-learn,
-PyTorch, and FastAPI imports can be validated.
+Raw data, model artifacts, local database files, virtual environments, and
+credentials are excluded from Git by default. Review dataset licensing and
+remove sensitive information before adding samples to the repository.

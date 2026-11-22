@@ -17,7 +17,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 import xgboost as xgb
 
-from src.models.torch_models import build_autoencoder, build_mlp
+from src.models.torch_models import build_autoencoder, build_classifier
 from src.preprocessing.cicids import (
     DATASET_ID,
     FlowDatasetSample,
@@ -32,6 +32,7 @@ from src.utils.logging_config import configure_logging
 LOGGER = logging.getLogger(__name__)
 ARTIFACT_ROOT = PROJECT_ROOT / "artifacts"
 NORMAL_LABELS = {"benign", "normal"}
+NEURAL_MODEL_NAMES = ("ann", "cnn", "rnn", "lstm", "transformer")
 
 
 def _stratified_split(
@@ -111,7 +112,7 @@ def _classification_metrics(
     }
 
 
-def _predict_mlp(
+def _predict_classifier(
     model: nn.Module,
     features: np.ndarray,
     device: torch.device,
@@ -159,10 +160,8 @@ def _write_json(path: Path, payload: object) -> None:
 
 
 def _artifact_paths() -> dict[str, Path]:
-    return {
+    paths = {
         "classifier": ARTIFACT_ROOT / "classifiers" / "xgboost_classifier.json",
-        "mlp": ARTIFACT_ROOT / "classifiers" / "mlp_state_dict.pt",
-        "mlp_config": ARTIFACT_ROOT / "classifiers" / "mlp_config.json",
         "autoencoder": ARTIFACT_ROOT / "autoencoders" / "autoencoder_state_dict.pt",
         "autoencoder_config": ARTIFACT_ROOT / "autoencoders" / "autoencoder_config.json",
         "preprocessing": ARTIFACT_ROOT / "preprocessing" / "preprocessing.json",
@@ -171,6 +170,100 @@ def _artifact_paths() -> dict[str, Path]:
         "metrics": ARTIFACT_ROOT / "preprocessing" / "evaluation_metrics.json",
         "manifest": ARTIFACT_ROOT / "manifest.json",
     }
+    for model_name in NEURAL_MODEL_NAMES:
+        paths[model_name] = (
+            ARTIFACT_ROOT / "classifiers" / f"{model_name}_state_dict.pt"
+        )
+        paths[f"{model_name}_config"] = (
+            ARTIFACT_ROOT / "classifiers" / f"{model_name}_config.json"
+        )
+    return paths
+
+
+def _neural_model_configs(
+    input_size: int,
+    num_classes: int,
+) -> dict[str, dict[str, object]]:
+    common = {"input_size": input_size, "num_classes": num_classes, "dropout": 0.1}
+    return {
+        "ann": {
+            **common,
+            "architecture": "dense_ann_v1",
+            "hidden_sizes": [128, 64],
+        },
+        "cnn": {
+            **common,
+            "architecture": "feature_cnn1d_v1",
+            "channels": 32,
+        },
+        "rnn": {
+            **common,
+            "architecture": "feature_rnn_v1",
+            "hidden_size": 64,
+        },
+        "lstm": {
+            **common,
+            "architecture": "feature_lstm_v1",
+            "hidden_size": 64,
+        },
+        "transformer": {
+            **common,
+            "architecture": "feature_transformer_v1",
+            "d_model": 64,
+            "nhead": 4,
+            "num_layers": 2,
+            "dim_feedforward": 128,
+        },
+    }
+
+
+def _train_neural_classifier(
+    model_config: dict[str, object],
+    x_train: np.ndarray,
+    y_train: np.ndarray,
+    class_weights: np.ndarray,
+    *,
+    device: torch.device,
+    epochs: int,
+    batch_size: int,
+    seed: int,
+    model_name: str,
+) -> nn.Module:
+    torch.manual_seed(seed)
+    model = build_classifier(model_config).to(device)
+    model_batch_size = (
+        min(batch_size, 256) if model_name == "transformer" else batch_size
+    )
+    train_loader = DataLoader(
+        TensorDataset(torch.from_numpy(x_train), torch.from_numpy(y_train)),
+        batch_size=model_batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+    )
+    loss_weights = torch.tensor(class_weights, dtype=torch.float32, device=device)
+    loss_function = nn.CrossEntropyLoss(weight=loss_weights)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0.0
+        for batch_features, batch_labels in train_loader:
+            batch_features = batch_features.to(device, non_blocking=True)
+            batch_labels = batch_labels.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
+            loss = loss_function(model(batch_features), batch_labels)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item() * len(batch_features)
+        LOGGER.info(
+            "%s epoch %d/%d loss=%.6f",
+            model_name.upper(),
+            epoch + 1,
+            epochs,
+            total_loss / len(x_train),
+        )
+    return model
 
 
 def train_and_export(
@@ -184,6 +277,7 @@ def train_and_export(
     batch_size: int,
     anomaly_calibration_quantile: float,
     device: torch.device,
+    xgb_device: str,
     overwrite: bool,
 ) -> dict[str, Any]:
     paths = _artifact_paths()
@@ -250,6 +344,7 @@ def train_and_export(
             "subsample": 0.8,
             "colsample_bytree": 0.8,
             "tree_method": "hist",
+            "device": xgb_device,
             "eval_metric": "mlogloss",
             "nthread": min(4, os.cpu_count() or 1),
             "seed": seed,
@@ -268,46 +363,36 @@ def train_and_export(
     xgb_predictions = xgb_scores.argmax(axis=1).astype(np.int64)
     xgb_metrics = _classification_metrics(y_test, xgb_predictions, class_names)
 
-    mlp_config: dict[str, object] = {
-        "architecture": "dense_mlp_v1",
-        "input_size": len(preprocessor.feature_names),
-        "num_classes": len(class_names),
-        "hidden_sizes": [128, 64],
-        "dropout": 0.1,
-    }
-    torch.manual_seed(seed)
-    mlp = build_mlp(mlp_config).to(device)
-    train_loader = DataLoader(
-        TensorDataset(
-            torch.from_numpy(x_train),
-            torch.from_numpy(y_train),
-        ),
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
+    neural_configs = _neural_model_configs(
+        len(preprocessor.feature_names),
+        len(class_names),
     )
-    loss_weights = torch.tensor(class_weights, dtype=torch.float32, device=device)
-    mlp_loss = nn.CrossEntropyLoss(weight=loss_weights)
-    mlp_optimizer = torch.optim.AdamW(mlp.parameters(), lr=1e-3)
-    for epoch in range(epochs):
-        mlp.train()
-        total_loss = 0.0
-        for batch_features, batch_labels in train_loader:
-            batch_features = batch_features.to(device)
-            batch_labels = batch_labels.to(device)
-            mlp_optimizer.zero_grad(set_to_none=True)
-            loss = mlp_loss(mlp(batch_features), batch_labels)
-            loss.backward()
-            mlp_optimizer.step()
-            total_loss += loss.item() * len(batch_features)
-        LOGGER.info(
-            "MLP epoch %d/%d loss=%.6f",
-            epoch + 1,
-            epochs,
-            total_loss / len(x_train),
+    neural_models: dict[str, nn.Module] = {}
+    neural_metrics: dict[str, dict[str, Any]] = {}
+    for model_index, model_name in enumerate(NEURAL_MODEL_NAMES):
+        neural_model = _train_neural_classifier(
+            neural_configs[model_name],
+            x_train,
+            y_train,
+            class_weights,
+            device=device,
+            epochs=epochs,
+            batch_size=batch_size,
+            seed=seed + model_index,
+            model_name=model_name,
         )
-    _, mlp_predictions = _predict_mlp(mlp, x_test, device, batch_size)
-    mlp_metrics = _classification_metrics(y_test, mlp_predictions, class_names)
+        _, predictions = _predict_classifier(
+            neural_model,
+            x_test,
+            device,
+            min(batch_size, 256) if model_name == "transformer" else batch_size,
+        )
+        neural_metrics[model_name] = _classification_metrics(
+            y_test,
+            predictions,
+            class_names,
+        )
+        neural_models[model_name] = neural_model
 
     normal_class_ids = [
         index for index, name in enumerate(class_names)
@@ -389,7 +474,7 @@ def train_and_export(
     )
     metrics: dict[str, Any] = {
         "xgboost": xgb_metrics,
-        "mlp": mlp_metrics,
+        "neural_classifiers": neural_metrics,
         "autoencoder_anomaly_detection": {
             "calibration_quantile": anomaly_calibration_quantile,
             "reconstruction_mse_threshold": anomaly_threshold,
@@ -408,10 +493,11 @@ def train_and_export(
     for path in paths.values():
         path.parent.mkdir(parents=True, exist_ok=True)
     classifier.save_model(str(paths["classifier"]))
-    torch.save(mlp.cpu().state_dict(), paths["mlp"])
+    for model_name, model in neural_models.items():
+        torch.save(model.cpu().state_dict(), paths[model_name])
+        _write_json(paths[f"{model_name}_config"], neural_configs[model_name])
     torch.save(autoencoder.cpu().state_dict(), paths["autoencoder"])
     preprocessor.save(paths["preprocessing"])
-    _write_json(paths["mlp_config"], mlp_config)
     _write_json(paths["autoencoder_config"], autoencoder_config)
     _write_json(paths["labels"], {"schema_version": 1, "classes": class_names})
     _write_json(paths["thresholds"], {
@@ -424,12 +510,14 @@ def train_and_export(
     _write_json(paths["metrics"], metrics)
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "project": "AEGIS-NET",
         "dataset": DATASET_ID,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "python_version": platform.python_version(),
         "device": str(device),
+        "xgboost_device": xgb_device,
+        "torch_cuda_version": torch.version.cuda,
         "libraries": {
             "numpy": np.__version__,
             "pandas": pd.__version__,
@@ -448,12 +536,20 @@ def train_and_export(
             "epochs": epochs,
             "batch_size": batch_size,
             "anomaly_calibration_quantile": anomaly_calibration_quantile,
+            "xgboost_device": xgb_device,
+            "neural_models": list(NEURAL_MODEL_NAMES),
         },
         "sampled_rows_per_class": sample.sampled_counts,
         "scanned_rows_per_class": sample.scanned_counts,
         "score_semantics": (
             "Classifier scores are model outputs, not guarantees of correctness "
             "and not calibrated unless separately validated."
+        ),
+        "neural_input_semantics": (
+            "CNN, RNN, LSTM, and Transformer consume the dataset's fixed feature "
+            "order. Recurrent and attention models treat feature indices as tokens; "
+            "the CIC-IDS-2017 CSVs contain no per-flow temporal sequence for these "
+            "models to learn."
         ),
         "artifacts": {
             name: str(path.relative_to(ARTIFACT_ROOT)).replace("\\", "/")
@@ -493,6 +589,12 @@ def main() -> None:
         choices=("auto", "cpu", "cuda"),
         default="auto",
     )
+    parser.add_argument(
+        "--xgboost-device",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+        help="Use CUDA for XGBoost only when explicitly requested or PyTorch CUDA is active.",
+    )
     parser.add_argument("--overwrite-artifacts", action="store_true")
     args = parser.parse_args()
 
@@ -505,6 +607,9 @@ def main() -> None:
         parser.error("--anomaly-calibration-quantile must be between 0 and 1.")
     if args.device == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA was requested but is not available in this PyTorch installation.")
+    xgb_cuda_supported = bool(xgb.build_info().get("USE_CUDA", False))
+    if args.xgboost_device == "cuda" and not xgb_cuda_supported:
+        parser.error("CUDA was requested for XGBoost, but this XGBoost build lacks CUDA support.")
 
     if args.dataset_dir is None:
         dataset_dir = download_cicids_dataset()
@@ -524,6 +629,12 @@ def main() -> None:
             args.device == "auto" and torch.cuda.is_available()
         ) else "cpu"
     )
+    xgb_device = (
+        "cuda"
+        if args.xgboost_device == "cuda"
+        or (args.xgboost_device == "auto" and device.type == "cuda" and xgb_cuda_supported)
+        else "cpu"
+    )
     if device.type == "cpu":
         torch.set_num_threads(min(4, os.cpu_count() or 1))
 
@@ -537,6 +648,7 @@ def main() -> None:
         batch_size=args.batch_size,
         anomaly_calibration_quantile=args.anomaly_calibration_quantile,
         device=device,
+        xgb_device=xgb_device,
         overwrite=args.overwrite_artifacts,
     )
 

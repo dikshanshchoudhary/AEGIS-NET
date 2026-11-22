@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Direct, verified Windows/Python 3.15 CUDA 13 wheel for the local RTX 3050.
+torch @ https://download.pytorch.org/whl/cu130/torch-2.14.1%2Bcu130-cp315-cp315-win_amd64.whl

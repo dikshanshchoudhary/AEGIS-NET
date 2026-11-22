@@ -16,8 +16,12 @@ logging:
 
 detection:
   classifier_weights:
-    xgboost: 0.65
-    mlp: 0.35
+    xgboost: 0.5
+    ann: 0.1
+    cnn: 0.1
+    rnn: 0.1
+    lstm: 0.1
+    transformer: 0.1
   risk_weights:
     attack_probability: 0.7
     anomaly_score: 0.3

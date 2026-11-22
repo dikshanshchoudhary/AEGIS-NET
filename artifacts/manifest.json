@@ -2,7 +2,7 @@
   "schema_version": 1,
   "project": "AEGIS-NET",
   "dataset": "chethuhn/network-intrusion-dataset",
-  "created_at_utc": "2026-11-22T11:29:06.094946+00:00",
+  "created_at_utc": "2026-11-22T11:31:40.419394+00:00",
   "python_version": "3.15.0",
   "device": "cpu",
   "libraries": {
@@ -118,7 +118,8 @@
     "test_fraction": 0.2,
     "xgb_estimators": 100,
     "epochs": 8,
-    "batch_size": 1024
+    "batch_size": 1024,
+    "anomaly_calibration_quantile": 0.95
   },
   "sampled_rows_per_class": {
     "BENIGN": 5000,

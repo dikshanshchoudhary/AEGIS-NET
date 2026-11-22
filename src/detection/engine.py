@@ -10,9 +10,12 @@ import numpy as np
 import torch
 import xgboost as xgb
 
-from src.models.torch_models import build_autoencoder, build_mlp
+from src.models.torch_models import build_autoencoder, build_classifier
 from src.preprocessing.flow_preprocessor import FlowPreprocessor
 from src.utils.config import PROJECT_ROOT, load_config
+
+
+NEURAL_MODEL_NAMES = ("ann", "cnn", "rnn", "lstm", "transformer")
 
 
 @dataclass(frozen=True)
@@ -21,7 +24,7 @@ class DetectionResult:
     confidence_score: float
     confidence_note: str
     xgboost_scores: dict[str, float]
-    mlp_scores: dict[str, float]
+    neural_scores: dict[str, dict[str, float]]
     anomaly_score: float
     anomaly_threshold: float
     anomaly_detected: bool
@@ -38,7 +41,7 @@ class DetectionEngine:
         *,
         preprocessor: FlowPreprocessor,
         classifier: xgb.Booster,
-        mlp: torch.nn.Module,
+        neural_models: Mapping[str, torch.nn.Module],
         autoencoder: torch.nn.Module,
         labels: tuple[str, ...],
         normal_labels: frozenset[str],
@@ -51,7 +54,7 @@ class DetectionEngine:
     ) -> None:
         self.preprocessor = preprocessor
         self.classifier = classifier
-        self.mlp = mlp
+        self.neural_models = dict(neural_models)
         self.autoencoder = autoencoder
         self.labels = labels
         self.normal_labels = normal_labels
@@ -73,7 +76,7 @@ class DetectionEngine:
         manifest_path = root / "manifest.json"
         with manifest_path.open("r", encoding="utf-8") as source:
             manifest = json.load(source)
-        if manifest.get("schema_version") != 1:
+        if manifest.get("schema_version") != 2:
             raise ValueError(f"Unsupported model manifest schema: {manifest_path}")
 
         def artifact_path(key: str) -> Path:
@@ -124,15 +127,8 @@ class DetectionEngine:
         ):
             raise ValueError("Threshold artifact contains invalid normal labels.")
 
-        with artifact_path("mlp_config").open("r", encoding="utf-8") as source:
-            mlp_config = json.load(source)
         with artifact_path("autoencoder_config").open("r", encoding="utf-8") as source:
             autoencoder_config = json.load(source)
-        if (
-            mlp_config.get("input_size") != len(preprocessor.feature_names)
-            or mlp_config.get("num_classes") != len(labels)
-        ):
-            raise ValueError("MLP configuration does not match preprocessing and labels.")
         if autoencoder_config.get("input_size") != len(preprocessor.feature_names):
             raise ValueError("Autoencoder configuration does not match preprocessing.")
 
@@ -141,13 +137,30 @@ class DetectionEngine:
         )
         classifier = xgb.Booster()
         classifier.load_model(artifact_path("classifier"))
-        mlp = build_mlp(mlp_config)
-        mlp_state = torch.load(
-            artifact_path("mlp"),
-            map_location=selected_device,
-            weights_only=True,
-        )
-        mlp.load_state_dict(mlp_state, strict=True)
+        neural_models: dict[str, torch.nn.Module] = {}
+        for model_name in NEURAL_MODEL_NAMES:
+            with artifact_path(f"{model_name}_config").open(
+                "r",
+                encoding="utf-8",
+            ) as source:
+                model_config = json.load(source)
+            if (
+                model_config.get("input_size") != len(preprocessor.feature_names)
+                or model_config.get("num_classes") != len(labels)
+            ):
+                raise ValueError(
+                    f"{model_name.upper()} configuration does not match "
+                    "preprocessing and labels."
+                )
+            model = build_classifier(model_config)
+            model_state = torch.load(
+                artifact_path(model_name),
+                map_location=selected_device,
+                weights_only=True,
+            )
+            model.load_state_dict(model_state, strict=True)
+            neural_models[model_name] = model.to(selected_device).eval()
+
         autoencoder = build_autoencoder(autoencoder_config)
         autoencoder_state = torch.load(
             artifact_path("autoencoder"),
@@ -155,7 +168,6 @@ class DetectionEngine:
             weights_only=True,
         )
         autoencoder.load_state_dict(autoencoder_state, strict=True)
-        mlp.to(selected_device).eval()
         autoencoder.to(selected_device).eval()
 
         config = load_config(config_path or PROJECT_ROOT / "config.yaml")
@@ -164,7 +176,7 @@ class DetectionEngine:
             raise ValueError("Application config must include a detection mapping.")
         classifier_weights = cls._validated_weights(
             detection_config.get("classifier_weights"),
-            {"xgboost", "mlp"},
+            {"xgboost", *NEURAL_MODEL_NAMES},
         )
         risk_weights = cls._validated_weights(
             detection_config.get("risk_weights"),
@@ -181,7 +193,7 @@ class DetectionEngine:
         return cls(
             preprocessor=preprocessor,
             classifier=classifier,
-            mlp=mlp,
+            neural_models=neural_models,
             autoencoder=autoencoder,
             labels=labels,
             normal_labels=frozenset(normal_values),
@@ -217,16 +229,21 @@ class DetectionEngine:
         )
         with torch.no_grad():
             tensor = torch.from_numpy(feature_batch).to(self.device)
-            mlp_scores_array = torch.softmax(self.mlp(tensor), dim=1)[0].cpu().numpy()
+            neural_scores_arrays = {
+                name: torch.softmax(model(tensor), dim=1)[0].cpu().numpy()
+                for name, model in self.neural_models.items()
+            }
             reconstruction = self.autoencoder(tensor)
             anomaly_score = float(torch.mean((reconstruction - tensor) ** 2).item())
 
-        if len(xgb_scores_array) != len(self.labels) or len(mlp_scores_array) != len(self.labels):
+        if len(xgb_scores_array) != len(self.labels) or any(
+            len(scores) != len(self.labels)
+            for scores in neural_scores_arrays.values()
+        ):
             raise ValueError("Model output dimensions do not match the exported label order.")
-        combined = (
-            self.classifier_weights["xgboost"] * xgb_scores_array
-            + self.classifier_weights["mlp"] * mlp_scores_array
-        )
+        combined = self.classifier_weights["xgboost"] * xgb_scores_array
+        for model_name, scores in neural_scores_arrays.items():
+            combined += self.classifier_weights[model_name] * scores
         predicted_index = int(np.argmax(combined))
         predicted_category = self.labels[predicted_index]
         confidence_score = float(combined[predicted_index])
@@ -268,9 +285,12 @@ class DetectionEngine:
                 label: float(score)
                 for label, score in zip(self.labels, xgb_scores_array)
             },
-            mlp_scores={
-                label: float(score)
-                for label, score in zip(self.labels, mlp_scores_array)
+            neural_scores={
+                model_name: {
+                    label: float(score)
+                    for label, score in zip(self.labels, scores)
+                }
+                for model_name, scores in neural_scores_arrays.items()
             },
             anomaly_score=anomaly_score,
             anomaly_threshold=self.anomaly_threshold,
