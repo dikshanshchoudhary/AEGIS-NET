@@ -44,6 +44,11 @@ setup with:
 python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
 ```
 
+If an import fails with `An Application Control policy has blocked this file`,
+ask your administrator to review the blocked package DLLs or use an
+organization-approved Python environment. Do not disable or bypass Windows
+application-control policies.
+
 Raw and processed traffic data, model artifacts, local database files, virtual
 environments, and credentials are excluded from Git by default. Review dataset
 licenses and remove sensitive information before adding samples to the
@@ -63,3 +68,26 @@ repository.
 Model integration will use the exported Colab artifacts and their exact
 training-time preprocessing, feature names, and feature ordering. Do not
 recreate or infer those transformations in this application.
+
+## Stage 2: train and export in Colab
+
+Open [notebooks/aegis_kaggle_train_export.ipynb](./notebooks/aegis_kaggle_train_export.ipynb)
+in Google Colab and run its cells. The notebook downloads the Kaggle
+CIC-IDS-2017 CSVs, fits preprocessing on its training partition, trains the
+classifier and neural models, measures evaluation metrics, and downloads a
+versioned artifact bundle. Training results are produced only when the notebook
+runs; none are assumed here.
+
+After downloading `aegis_artifact_bundle.zip`, copy it into the project root
+and extract its contents into `artifacts`:
+
+```powershell
+Expand-Archive -LiteralPath .\aegis_artifact_bundle.zip -DestinationPath .\artifacts
+```
+
+Keep the exported manifest, feature order, preprocessing parameters, model
+configs, and thresholds together. Application inference integration and
+artifact-compatibility tests should use that exact bundle; do not substitute
+locally inferred transformations. The local Windows runtime currently needs
+administrator review of Application Control blocks before scikit-learn,
+PyTorch, and FastAPI imports can be validated.
